@@ -4,7 +4,7 @@ A simple, efficient load balancer implemented in C++ using an object-oriented ap
 
 ---
 
-## 📂 LoadBalancer Structure (/load_balancer)
+## 📂 LoadBalancer Structure (/load-balancer)
 
 ```plaintext
 .
@@ -37,7 +37,8 @@ A simple, efficient load balancer implemented in C++ using an object-oriented ap
 
 ```bash
 git clone <repository-url>
-cd load_balancer
+cd lLoad-Balancer-CPP
+cd load-balancer
 ```
 
 ### 2️⃣ Build the Project
@@ -68,6 +69,7 @@ g++ -std=c++11 -pthread -o load_balancer main.o LoadBalancer.o
 1. Start the server:
 
    ```bash
+   cd ..
    cd server
    npm install
    node server.js
@@ -76,6 +78,7 @@ g++ -std=c++11 -pthread -o load_balancer main.o LoadBalancer.o
 2. Start the testing server:
 
    ```bash
+   cd ..
    cd testing
    npm install
    node index.js
