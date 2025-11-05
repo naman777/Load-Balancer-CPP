@@ -37,7 +37,7 @@ A simple, efficient load balancer implemented in C++ using an object-oriented ap
 
 ```bash
 git clone <repository-url>
-cd lLoad-Balancer-CPP
+cd Load-Balancer-CPP
 cd load-balancer
 ```
 
