@@ -4,20 +4,55 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <atomic>
+#include <functional>
+#include <queue>
+#include <condition_variable>
+
+enum class Algorithm {
+    LEAST_CONNECTIONS,
+    ROUND_ROBIN
+};
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t threads);
+    ~ThreadPool();
+    void enqueue(std::function<void()> task);
+
+private:
+    std::vector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+};
 
 class LoadBalancer {
-private:
-    std::vector<int> backend_ports;
-    std::vector<int> active_connections;
-    std::mutex connection_mutex;
-    int listen_port;
-
-    int find_least_connection_index(); // Finds the index of the backend port with the least active connections
-    void handle_client(int client_socket); // Handles a client connection
-
 public:
-    LoadBalancer(int listen_port, const std::vector<int>& ports);
-    void start(); // Start the load balancer server
+    LoadBalancer(int listen_port, const std::vector<int>& ports,
+                 Algorithm algo = Algorithm::LEAST_CONNECTIONS,
+                 size_t thread_pool_size = 16);
+    ~LoadBalancer();
+    void start();
+    void stop();
+
+private:
+    int listen_port_;
+    std::vector<int> backend_ports_;
+    std::vector<int> active_connections_;
+    std::vector<bool> backend_healthy_;
+    std::mutex connection_mutex_;
+    std::atomic<bool> stop_flag_{false};
+    int rr_index_ = 0;
+    Algorithm algorithm_;
+    ThreadPool thread_pool_;
+    std::thread health_check_thread_;
+    int server_socket_ = -1;
+
+    int select_and_reserve_backend();
+    void handle_client(int client_socket);
+    void health_check_loop();
 };
 
 #endif // LOADBALANCER_H

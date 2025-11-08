@@ -1,17 +1,13 @@
-CXX = g++
-CXXFLAGS = -std=c++11 -pthread
-TARGET = load_balancer
+cmake_minimum_required(VERSION 3.14)
+project(load_balancer CXX)
 
-all: $(TARGET)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-$(TARGET): main.o LoadBalancer.o
-	$(CXX) $(CXXFLAGS) -o $(TARGET) main.o LoadBalancer.o
+add_executable(load_balancer
+    main.cpp
+    LoadBalancer.cpp
+)
 
-main.o: main.cpp LoadBalancer.h
-	$(CXX) $(CXXFLAGS) -c main.cpp
-
-LoadBalancer.o: LoadBalancer.cpp LoadBalancer.h
-	$(CXX) $(CXXFLAGS) -c LoadBalancer.cpp
-
-clean:
-	rm -f $(TARGET) *.o
+target_compile_options(load_balancer PRIVATE -Wall -Wextra -O2)
+target_link_libraries(load_balancer PRIVATE pthread)

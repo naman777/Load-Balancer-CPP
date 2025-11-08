@@ -1,6 +1,6 @@
-CXX = g++
-CXXFLAGS = -std=c++11 -pthread
-TARGET = load_balancer
+CXX      = g++
+CXXFLAGS = -std=c++17 -pthread -Wall -Wextra -O2
+TARGET   = load_balancer
 
 all: $(TARGET)
 
@@ -15,4 +15,5 @@ LoadBalancer.o: LoadBalancer.cpp LoadBalancer.h
 
 clean:
 	rm -f $(TARGET) *.o
-pu
+
+.PHONY: all clean
