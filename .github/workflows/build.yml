@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y g++ make
+
+      - name: Build with Makefile
+        working-directory: load-balancer
+        run: make
+
+      - name: Verify binary exists
+        run: test -f load-balancer/load_balancer
+
+      - name: Build with CMake
+        run: |
+          cmake -S load-balancer -B build
+          cmake --build build

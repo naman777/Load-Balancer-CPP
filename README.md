@@ -19,8 +19,13 @@ A simple, efficient load balancer implemented in C++ using an object-oriented ap
 
 ## ✨ Features
 
-- **Least-connections strategy** for fair load distribution.
-- **Multithreaded handling** of client connections for better performance.
+- **Least-connections and Round-Robin** algorithms, selectable at startup.
+- **Thread pool** (fixed-size, configurable) — no unbounded thread creation.
+- **Bidirectional proxy forwarding** via `select()` with a 30-second idle timeout.
+- **Health checks** — background thread probes each backend every 5 seconds and stops routing to downed servers.
+- **Atomic backend selection** — algorithm selection and counter increment happen under a single lock, eliminating TOCTOU races.
+- **Graceful shutdown** on SIGINT/SIGTERM — drains the accept loop and joins worker threads.
+- `SO_REUSEADDR` enabled — load balancer can restart immediately after a crash without waiting for TCP TIME_WAIT.
 - Clean, **object-oriented design** for easy understanding and maintenance.
 
 ---
@@ -36,7 +41,7 @@ A simple, efficient load balancer implemented in C++ using an object-oriented ap
 ### 1️⃣ Clone the Repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/naman777/Load-Balancer-CPP.git
 cd Load-Balancer-CPP
 cd load-balancer
 ```
@@ -54,8 +59,8 @@ make
 Manually compile the project using `g++`:
 
 ```bash
-g++ -std=c++11 -pthread -c LoadBalancer.cpp main.cpp
-g++ -std=c++11 -pthread -o load_balancer main.o LoadBalancer.o
+g++ -std=c++17 -pthread -c LoadBalancer.cpp main.cpp
+g++ -std=c++17 -pthread -o load_balancer main.o LoadBalancer.o
 ```
 
 ### 3️⃣ Run the Load Balancer
@@ -147,9 +152,10 @@ Contributions are welcome! Feel free to fork the repository, submit issues, or c
 
 ## 🌟 Future Work
 
-- Add support for more sophisticated load-balancing algorithms (e.g., round-robin, IP-hash).
-- Implement health checks for backend servers.
-- Add dynamic scaling of backend servers.
+- Add IP-hash algorithm for sticky sessions.
+- Support reading backend list and config from a file instead of hardcoded values.
+- Replace the Node.js backend stubs with a self-contained C++ echo server.
+- Add unit tests for `select_and_reserve_backend()` logic and integration tests with CI assertions.
 
 ---
 

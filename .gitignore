@@ -1,4 +1,5 @@
 /node_modules
-.vscode
 .claude
-fixes.md
+load-balancer/*.o
+load-balancer/load_balancer
+build/
