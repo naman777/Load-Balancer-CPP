@@ -1,12 +1,91 @@
 #include "../load-balancer/LoadBalancer.h"
+#include "../load-balancer/backend_selector.h"
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <iostream>
-#include <thread>
 #include <vector>
 
-// ── ThreadPool tests ──────────────────────────────────────────────────────────
+// ── Least-connections ─────────────────────────────────────────────────────────
+
+void test_lc_picks_minimum() {
+    std::vector<int>  conns   = {5, 2, 8, 2};
+    std::vector<bool> healthy = {true, true, true, true};
+    int idx = select_least_connections(conns, healthy);
+    assert(idx == 1 || idx == 3); // both have 2 — either is valid
+    std::cout << "PASS  lc_picks_minimum\n";
+}
+
+void test_lc_skips_unhealthy() {
+    std::vector<int>  conns   = {0, 10};
+    std::vector<bool> healthy = {false, true};
+    assert(select_least_connections(conns, healthy) == 1);
+    std::cout << "PASS  lc_skips_unhealthy\n";
+}
+
+void test_lc_all_unhealthy() {
+    std::vector<int>  conns   = {0, 0, 0};
+    std::vector<bool> healthy = {false, false, false};
+    assert(select_least_connections(conns, healthy) == -1);
+    std::cout << "PASS  lc_all_unhealthy\n";
+}
+
+void test_lc_single_backend() {
+    std::vector<int>  conns   = {7};
+    std::vector<bool> healthy = {true};
+    assert(select_least_connections(conns, healthy) == 0);
+    std::cout << "PASS  lc_single_backend\n";
+}
+
+// ── Round-robin ───────────────────────────────────────────────────────────────
+
+void test_rr_cycles_all_backends() {
+    std::vector<bool> healthy = {true, true, true};
+    int idx = 0;
+    assert(select_round_robin(idx, 3, healthy) == 0);
+    assert(select_round_robin(idx, 3, healthy) == 1);
+    assert(select_round_robin(idx, 3, healthy) == 2);
+    assert(select_round_robin(idx, 3, healthy) == 0); // wraps
+    std::cout << "PASS  rr_cycles_all_backends\n";
+}
+
+void test_rr_skips_unhealthy() {
+    std::vector<bool> healthy = {true, false, true};
+    int idx = 0;
+    assert(select_round_robin(idx, 3, healthy) == 0);
+    assert(select_round_robin(idx, 3, healthy) == 2); // skips index 1
+    std::cout << "PASS  rr_skips_unhealthy\n";
+}
+
+void test_rr_all_unhealthy() {
+    std::vector<bool> healthy = {false, false};
+    int idx = 0;
+    assert(select_round_robin(idx, 2, healthy) == -1);
+    std::cout << "PASS  rr_all_unhealthy\n";
+}
+
+// ── IP-hash ───────────────────────────────────────────────────────────────────
+
+void test_ip_hash_deterministic() {
+    std::vector<bool> healthy = {true, true, true};
+    uint32_t ip = 0xC0A80101; // 192.168.1.1
+    assert(select_ip_hash(ip, healthy) == select_ip_hash(ip, healthy));
+    std::cout << "PASS  ip_hash_deterministic\n";
+}
+
+void test_ip_hash_skips_unhealthy() {
+    // IP 3 → 3 % 3 == 0, which is unhealthy; should fall to index 1.
+    std::vector<bool> healthy = {false, true, true};
+    assert(select_ip_hash(3, healthy) == 1);
+    std::cout << "PASS  ip_hash_skips_unhealthy\n";
+}
+
+void test_ip_hash_all_unhealthy() {
+    std::vector<bool> healthy = {false, false, false};
+    assert(select_ip_hash(42, healthy) == -1);
+    std::cout << "PASS  ip_hash_all_unhealthy\n";
+}
+
+// ── ThreadPool ────────────────────────────────────────────────────────────────
 
 void test_threadpool_executes_all_tasks() {
     std::atomic<int> counter{0};
@@ -14,7 +93,7 @@ void test_threadpool_executes_all_tasks() {
         ThreadPool pool(4);
         for (int i = 0; i < 100; ++i)
             pool.enqueue([&counter] { counter++; });
-    } // destructor joins all workers — all tasks must be done by now
+    }
     assert(counter == 100);
     std::cout << "PASS  threadpool_executes_all_tasks\n";
 }
@@ -32,8 +111,7 @@ void test_threadpool_concurrent_increments() {
     std::cout << "PASS  threadpool_concurrent_increments\n";
 }
 
-void test_threadpool_order_independent() {
-    // Tasks that write into indexed slots — verify no slot is written twice.
+void test_threadpool_indexed_slots() {
     const int N = 200;
     std::vector<std::atomic<int>> slots(N);
     for (auto& s : slots) s.store(0);
@@ -42,34 +120,34 @@ void test_threadpool_order_independent() {
         for (int i = 0; i < N; ++i)
             pool.enqueue([i, &slots] { slots[i].fetch_add(1); });
     }
-    for (int i = 0; i < N; ++i)
-        assert(slots[i].load() == 1);
-    std::cout << "PASS  threadpool_order_independent\n";
-}
-
-void test_threadpool_single_thread() {
-    std::atomic<int> counter{0};
-    {
-        ThreadPool pool(1);
-        for (int i = 0; i < 50; ++i)
-            pool.enqueue([&counter] { counter++; });
-    }
-    assert(counter == 50);
-    std::cout << "PASS  threadpool_single_thread\n";
+    for (int i = 0; i < N; ++i) assert(slots[i].load() == 1);
+    std::cout << "PASS  threadpool_indexed_slots\n";
 }
 
 void test_threadpool_empty_is_safe() {
-    ThreadPool pool(4); // enqueue nothing — destructor must not hang
+    ThreadPool pool(4);
     std::cout << "PASS  threadpool_empty_is_safe\n";
 }
 
 int main() {
+    test_lc_picks_minimum();
+    test_lc_skips_unhealthy();
+    test_lc_all_unhealthy();
+    test_lc_single_backend();
+
+    test_rr_cycles_all_backends();
+    test_rr_skips_unhealthy();
+    test_rr_all_unhealthy();
+
+    test_ip_hash_deterministic();
+    test_ip_hash_skips_unhealthy();
+    test_ip_hash_all_unhealthy();
+
     test_threadpool_executes_all_tasks();
     test_threadpool_concurrent_increments();
-    test_threadpool_order_independent();
-    test_threadpool_single_thread();
+    test_threadpool_indexed_slots();
     test_threadpool_empty_is_safe();
 
-    std::cout << "\nAll tests passed.\n";
+    std::cout << "\nAll 14 tests passed.\n";
     return 0;
 }

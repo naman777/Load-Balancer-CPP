@@ -1,14 +1,15 @@
 #include "LoadBalancer.h"
-#include <iostream>
+#include "backend_selector.h"
+#include "logger.h"
 #include <arpa/inet.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <cstring>
 #include <cerrno>
+#include <chrono>
 #include <climits>
+#include <cstring>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
-#include <chrono>
+#include <unistd.h>
 
 // ─── ThreadPool ───────────────────────────────────────────────────────────────
 
@@ -49,7 +50,6 @@ ThreadPool::~ThreadPool() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Guarantees all bytes are sent; returns false on error.
 static bool send_all(int fd, const char* buf, ssize_t len) {
     ssize_t sent = 0;
     while (sent < len) {
@@ -60,7 +60,41 @@ static bool send_all(int fd, const char* buf, ssize_t len) {
     return true;
 }
 
-// Non-blocking TCP probe with 2-second timeout — used for health checks.
+// Injects "Connection: close" into the first HTTP request buffer so the
+// backend closes the connection after sending its response. This prevents
+// keep-alive sessions from holding a backend slot across multiple requests.
+// Assumes headers fit within the first read() buffer (true for >99% of requests).
+static std::string inject_connection_close(const char* data, ssize_t len) {
+    std::string req(data, len);
+    const size_t hdr_end = req.find("\r\n\r\n");
+    if (hdr_end == std::string::npos) return req; // incomplete headers — forward as-is
+
+    std::string headers = req.substr(0, hdr_end);
+    const std::string body_and_end = req.substr(hdr_end); // includes \r\n\r\n
+
+    // Remove any existing Connection header (case-insensitive).
+    for (size_t pos = 0;;) {
+        pos = headers.find("\r\n", pos);
+        if (pos == std::string::npos) break;
+        size_t line_start = pos + 2;
+        size_t line_end = headers.find("\r\n", line_start);
+        if (line_end == std::string::npos) line_end = headers.size();
+        std::string line = headers.substr(line_start, line_end - line_start);
+        // case-insensitive prefix check
+        if (line.size() >= 11) {
+            std::string prefix = line.substr(0, 11);
+            for (auto& c : prefix) c = static_cast<char>(std::tolower(c));
+            if (prefix == "connection:") {
+                headers.erase(pos, line_end - pos);
+                continue;
+            }
+        }
+        pos = line_end;
+    }
+
+    return headers + "\r\nConnection: close" + body_and_end;
+}
+
 static bool tcp_probe(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return false;
@@ -73,8 +107,7 @@ static bool tcp_probe(int port) {
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
     bool healthy = false;
-    int ret = connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    if (ret == 0) {
+    if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
         healthy = true;
     } else if (errno == EINPROGRESS) {
         fd_set wfds;
@@ -83,8 +116,8 @@ static bool tcp_probe(int port) {
         struct timeval tv{2, 0};
         if (select(sock + 1, nullptr, &wfds, nullptr, &tv) > 0) {
             int error = 0;
-            socklen_t len = sizeof(error);
-            getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len);
+            socklen_t slen = sizeof(error);
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &slen);
             healthy = (error == 0);
         }
     }
@@ -108,56 +141,29 @@ LoadBalancer::~LoadBalancer() {
     stop();
 }
 
-// Selects a backend AND increments its counter atomically under one lock,
-// eliminating the TOCTOU race of the original two-lock approach.
 int LoadBalancer::select_and_reserve_backend(uint32_t client_ip) {
     std::lock_guard<std::mutex> lock(connection_mutex_);
-    const size_t n = backend_ports_.size();
 
-    if (algorithm_ == Algorithm::ROUND_ROBIN) {
-        for (size_t i = 0; i < n; ++i) {
-            int idx = (rr_index_++) % static_cast<int>(n);
-            if (backend_healthy_[idx]) {
-                active_connections_[idx]++;
-                return idx;
-            }
-        }
-        return -1;
-    }
+    int idx = -1;
+    if (algorithm_ == Algorithm::ROUND_ROBIN)
+        idx = select_round_robin(rr_index_, backend_ports_.size(), backend_healthy_);
+    else if (algorithm_ == Algorithm::IP_HASH)
+        idx = select_ip_hash(client_ip, backend_healthy_);
+    else
+        idx = select_least_connections(active_connections_, backend_healthy_);
 
-    if (algorithm_ == Algorithm::IP_HASH) {
-        // Hash client IP to a backend; walk forward to find a healthy one.
-        size_t start = client_ip % n;
-        for (size_t i = 0; i < n; ++i) {
-            size_t idx = (start + i) % n;
-            if (backend_healthy_[idx]) {
-                active_connections_[idx]++;
-                return static_cast<int>(idx);
-            }
-        }
-        return -1;
-    }
-
-    // Least connections: scan all healthy backends for minimum.
-    int best = -1;
-    int min_conn = INT_MAX;
-    for (size_t i = 0; i < n; ++i) {
-        if (backend_healthy_[i] && active_connections_[i] < min_conn) {
-            min_conn = active_connections_[i];
-            best = static_cast<int>(i);
-        }
-    }
-    if (best >= 0) active_connections_[best]++;
-    return best;
+    if (idx >= 0) active_connections_[idx]++;
+    return idx;
 }
 
 void LoadBalancer::handle_client(int client_socket) {
     sockaddr_in peer{};
     socklen_t peer_len = sizeof(peer);
     getpeername(client_socket, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+
     int index = select_and_reserve_backend(ntohl(peer.sin_addr.s_addr));
     if (index < 0) {
-        std::cerr << "No healthy backend available — dropping connection.\n";
+        log_warn("No healthy backend — dropping connection.");
         close(client_socket);
         return;
     }
@@ -165,7 +171,7 @@ void LoadBalancer::handle_client(int client_socket) {
     int backend_port = backend_ports_[index];
     int backend_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (backend_socket < 0) {
-        std::cerr << "Failed to create backend socket: " << strerror(errno) << "\n";
+        log_err("Failed to create backend socket: " + std::string(strerror(errno)));
         std::lock_guard<std::mutex> lock(connection_mutex_);
         active_connections_[index]--;
         close(client_socket);
@@ -177,9 +183,10 @@ void LoadBalancer::handle_client(int client_socket) {
     backend_addr.sin_port = htons(backend_port);
     inet_pton(AF_INET, "127.0.0.1", &backend_addr.sin_addr);
 
-    if (connect(backend_socket, reinterpret_cast<sockaddr*>(&backend_addr), sizeof(backend_addr)) < 0) {
-        std::cerr << "Failed to connect to backend port " << backend_port
-                  << ": " << strerror(errno) << "\n";
+    if (connect(backend_socket, reinterpret_cast<sockaddr*>(&backend_addr),
+                sizeof(backend_addr)) < 0) {
+        log_err("Failed to connect to backend port " + std::to_string(backend_port) +
+                ": " + strerror(errno));
         {
             std::lock_guard<std::mutex> lock(connection_mutex_);
             active_connections_[index]--;
@@ -190,25 +197,35 @@ void LoadBalancer::handle_client(int client_socket) {
         return;
     }
 
-    // Bidirectional forwarding via select() — handles both directions concurrently,
-    // avoids the deadlock of sequential read/write, and respects the idle timeout.
+    // Bidirectional forwarding via select() — 30-second idle timeout.
+    // On the first client→backend read we inject "Connection: close" so the
+    // backend terminates the connection after its response, giving us a clean
+    // end-of-response signal without parsing Content-Length or chunked encoding.
     char buffer[4096];
     int maxfd = std::max(client_socket, backend_socket) + 1;
+    bool first_client_read = true;
 
     while (true) {
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(client_socket, &read_fds);
         FD_SET(backend_socket, &read_fds);
-        struct timeval timeout{30, 0}; // 30-second idle timeout
+        struct timeval timeout{30, 0};
 
         int ready = select(maxfd, &read_fds, nullptr, nullptr, &timeout);
-        if (ready <= 0) break; // timeout or error
+        if (ready <= 0) break;
 
         if (FD_ISSET(client_socket, &read_fds)) {
             ssize_t n = read(client_socket, buffer, sizeof(buffer));
             if (n <= 0) break;
-            if (!send_all(backend_socket, buffer, n)) break;
+            if (first_client_read) {
+                std::string modified = inject_connection_close(buffer, n);
+                if (!send_all(backend_socket, modified.data(),
+                              static_cast<ssize_t>(modified.size()))) break;
+                first_client_read = false;
+            } else {
+                if (!send_all(backend_socket, buffer, n)) break;
+            }
         }
         if (FD_ISSET(backend_socket, &read_fds)) {
             ssize_t n = read(backend_socket, buffer, sizeof(buffer));
@@ -224,9 +241,10 @@ void LoadBalancer::handle_client(int client_socket) {
     {
         std::lock_guard<std::mutex> lock(connection_mutex_);
         active_connections_[index]--;
-        remaining = active_connections_[index]; // capture inside lock to avoid data race
+        remaining = active_connections_[index];
     }
-    std::cout << "Backend port " << backend_port << " connection closed. Active: " << remaining << "\n";
+    log_info("Backend :" + std::to_string(backend_port) +
+             " connection closed. Active: " + std::to_string(remaining));
 }
 
 void LoadBalancer::health_check_loop() {
@@ -236,19 +254,18 @@ void LoadBalancer::health_check_loop() {
             bool healthy = tcp_probe(backend_ports_[i]);
             std::lock_guard<std::mutex> lock(connection_mutex_);
             if (backend_healthy_[i] != healthy) {
-                std::cout << "[health] Backend port " << backend_ports_[i]
-                          << (healthy ? " is UP\n" : " is DOWN\n");
+                log_info("Backend :" + std::to_string(backend_ports_[i]) +
+                         (healthy ? " is UP" : " is DOWN"));
             }
             backend_healthy_[i] = healthy;
         }
-        // Sleep in 1-second steps so stop() isn't delayed by the full interval.
         for (int i = 0; i < 5 && !stop_flag_; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
 void LoadBalancer::stop() {
-    if (stop_flag_.exchange(true)) return; // idempotent — safe to call more than once
+    if (stop_flag_.exchange(true)) return;
     if (server_socket_ >= 0) {
         close(server_socket_);
         server_socket_ = -1;
@@ -260,11 +277,10 @@ void LoadBalancer::stop() {
 void LoadBalancer::start() {
     server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket_ < 0) {
-        std::cerr << "Failed to create server socket: " << strerror(errno) << "\n";
+        log_err("Failed to create server socket: " + std::string(strerror(errno)));
         return;
     }
 
-    // Allow immediate restart after crash (avoids TIME_WAIT bind failure).
     int opt = 1;
     setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -273,29 +289,33 @@ void LoadBalancer::start() {
     server_addr.sin_port = htons(listen_port_);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(server_socket_, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
-        std::cerr << "Failed to bind on port " << listen_port_ << ": " << strerror(errno) << "\n";
+    if (bind(server_socket_, reinterpret_cast<sockaddr*>(&server_addr),
+             sizeof(server_addr)) < 0) {
+        log_err("Failed to bind on port " + std::to_string(listen_port_) +
+                ": " + strerror(errno));
         close(server_socket_);
         return;
     }
 
     if (listen(server_socket_, SOMAXCONN) < 0) {
-        std::cerr << "Failed to listen: " << strerror(errno) << "\n";
+        log_err("Failed to listen: " + std::string(strerror(errno)));
         close(server_socket_);
         return;
     }
 
     health_check_thread_ = std::thread(&LoadBalancer::health_check_loop, this);
-    std::cout << "Load balancer listening on port " << listen_port_
-              << " with " << backend_ports_.size() << " backends.\n";
+    log_info("Listening on port " + std::to_string(listen_port_) +
+             " with " + std::to_string(backend_ports_.size()) + " backends.");
 
     while (!stop_flag_) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
-        int client_socket = accept(server_socket_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+        int client_socket = accept(server_socket_,
+                                   reinterpret_cast<sockaddr*>(&client_addr),
+                                   &client_len);
         if (client_socket < 0) {
             if (stop_flag_) break;
-            std::cerr << "accept() failed: " << strerror(errno) << "\n";
+            log_err("accept() failed: " + std::string(strerror(errno)));
             continue;
         }
         thread_pool_.enqueue([this, client_socket] {
