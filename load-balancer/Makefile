@@ -1,6 +1,7 @@
 CXX      = g++
 CXXFLAGS = -std=c++17 -pthread -Wall -Wextra -O2
 TARGET   = load_balancer
+TEST_BIN = ../tests/test_lb
 
 all: $(TARGET)
 
@@ -13,7 +14,13 @@ main.o: main.cpp LoadBalancer.h
 LoadBalancer.o: LoadBalancer.cpp LoadBalancer.h
 	$(CXX) $(CXXFLAGS) -c LoadBalancer.cpp
 
-clean:
-	rm -f $(TARGET) *.o
+$(TEST_BIN): ../tests/test_lb.cpp LoadBalancer.o
+	$(CXX) $(CXXFLAGS) -o $(TEST_BIN) ../tests/test_lb.cpp LoadBalancer.o
 
-.PHONY: all clean
+test: $(TEST_BIN)
+	$(TEST_BIN)
+
+clean:
+	rm -f $(TARGET) *.o $(TEST_BIN)
+
+.PHONY: all test clean

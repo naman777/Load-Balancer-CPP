@@ -110,12 +110,13 @@ LoadBalancer::~LoadBalancer() {
 
 // Selects a backend AND increments its counter atomically under one lock,
 // eliminating the TOCTOU race of the original two-lock approach.
-int LoadBalancer::select_and_reserve_backend() {
+int LoadBalancer::select_and_reserve_backend(uint32_t client_ip) {
     std::lock_guard<std::mutex> lock(connection_mutex_);
+    const size_t n = backend_ports_.size();
 
     if (algorithm_ == Algorithm::ROUND_ROBIN) {
-        for (size_t i = 0; i < backend_ports_.size(); ++i) {
-            int idx = (rr_index_++) % static_cast<int>(backend_ports_.size());
+        for (size_t i = 0; i < n; ++i) {
+            int idx = (rr_index_++) % static_cast<int>(n);
             if (backend_healthy_[idx]) {
                 active_connections_[idx]++;
                 return idx;
@@ -124,10 +125,23 @@ int LoadBalancer::select_and_reserve_backend() {
         return -1;
     }
 
+    if (algorithm_ == Algorithm::IP_HASH) {
+        // Hash client IP to a backend; walk forward to find a healthy one.
+        size_t start = client_ip % n;
+        for (size_t i = 0; i < n; ++i) {
+            size_t idx = (start + i) % n;
+            if (backend_healthy_[idx]) {
+                active_connections_[idx]++;
+                return static_cast<int>(idx);
+            }
+        }
+        return -1;
+    }
+
     // Least connections: scan all healthy backends for minimum.
     int best = -1;
     int min_conn = INT_MAX;
-    for (size_t i = 0; i < backend_ports_.size(); ++i) {
+    for (size_t i = 0; i < n; ++i) {
         if (backend_healthy_[i] && active_connections_[i] < min_conn) {
             min_conn = active_connections_[i];
             best = static_cast<int>(i);
@@ -138,7 +152,10 @@ int LoadBalancer::select_and_reserve_backend() {
 }
 
 void LoadBalancer::handle_client(int client_socket) {
-    int index = select_and_reserve_backend();
+    sockaddr_in peer{};
+    socklen_t peer_len = sizeof(peer);
+    getpeername(client_socket, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+    int index = select_and_reserve_backend(ntohl(peer.sin_addr.s_addr));
     if (index < 0) {
         std::cerr << "No healthy backend available — dropping connection.\n";
         close(client_socket);
