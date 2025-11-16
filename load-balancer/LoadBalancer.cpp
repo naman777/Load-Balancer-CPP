@@ -95,35 +95,53 @@ static std::string inject_connection_close(const char* data, ssize_t len) {
     return headers + "\r\nConnection: close" + body_and_end;
 }
 
-static bool tcp_probe(int port) {
+// Connects with a 2-second timeout (non-blocking connect + select).
+// Returns the connected fd on success, -1 on failure.
+static int connect_with_timeout(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return false;
+    if (sock < 0) return -1;
 
     fcntl(sock, F_SETFL, O_NONBLOCK);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port   = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-    bool healthy = false;
-    if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-        healthy = true;
-    } else if (errno == EINPROGRESS) {
-        fd_set wfds;
-        FD_ZERO(&wfds);
-        FD_SET(sock, &wfds);
-        struct timeval tv{2, 0};
-        if (select(sock + 1, nullptr, &wfds, nullptr, &tv) > 0) {
-            int error = 0;
-            socklen_t slen = sizeof(error);
-            getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &slen);
-            healthy = (error == 0);
-        }
-    }
+    int ret = connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (ret == 0) return sock; // connected immediately
+    if (errno != EINPROGRESS) { close(sock); return -1; }
 
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(sock, &wfds);
+    struct timeval tv{2, 0};
+    if (select(sock + 1, nullptr, &wfds, nullptr, &tv) <= 0) { close(sock); return -1; }
+
+    int error = 0;
+    socklen_t slen = sizeof(error);
+    getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &slen);
+    if (error != 0) { close(sock); return -1; }
+    return sock;
+}
+
+// Sends an HTTP HEAD request and checks for a 2xx response.
+// Falls back to "healthy" on connection success if no HTTP response is received
+// (e.g., raw TCP backend), so this gracefully handles non-HTTP backends too.
+static bool http_probe(int port) {
+    int sock = connect_with_timeout(port);
+    if (sock < 0) return false;
+
+    const char* req = "HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+    send(sock, req, strlen(req), MSG_NOSIGNAL);
+
+    char buf[64] = {};
+    ssize_t n = recv(sock, buf, sizeof(buf) - 1, 0);
     close(sock);
-    return healthy;
+
+    if (n < 12) return true;  // connected but no HTTP — treat as healthy (raw TCP)
+    // "HTTP/1.x 2xx" → healthy
+    return (strncmp(buf, "HTTP/1.", 7) == 0 && buf[9] == '2');
 }
 
 // ─── LoadBalancer ─────────────────────────────────────────────────────────────
@@ -251,7 +269,7 @@ void LoadBalancer::health_check_loop() {
     while (!stop_flag_) {
         for (size_t i = 0; i < backend_ports_.size(); ++i) {
             if (stop_flag_) return;
-            bool healthy = tcp_probe(backend_ports_[i]);
+            bool healthy = http_probe(backend_ports_[i]);
             std::lock_guard<std::mutex> lock(connection_mutex_);
             if (backend_healthy_[i] != healthy) {
                 log_info("Backend :" + std::to_string(backend_ports_[i]) +
@@ -264,14 +282,80 @@ void LoadBalancer::health_check_loop() {
     }
 }
 
+// Serves a simple JSON stats page on listen_port_ + 1.
+// curl http://localhost:8081/stats
+void LoadBalancer::stats_loop() {
+    int stats_port = listen_port_ + 1;
+    stats_socket_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (stats_socket_ < 0) {
+        log_warn("Could not create stats socket — stats endpoint disabled.");
+        return;
+    }
+    int opt = 1;
+    setsockopt(stats_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(stats_port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(stats_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
+        listen(stats_socket_, 16) < 0) {
+        log_warn("Could not bind stats port " + std::to_string(stats_port));
+        close(stats_socket_);
+        stats_socket_ = -1;
+        return;
+    }
+    log_info("Stats endpoint listening on port " + std::to_string(stats_port) +
+             "  (curl http://localhost:" + std::to_string(stats_port) + "/stats)");
+
+    while (!stop_flag_) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(stats_socket_, &rfds);
+        struct timeval tv{1, 0};
+        if (select(stats_socket_ + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
+
+        int client = accept(stats_socket_, nullptr, nullptr);
+        if (client < 0) continue;
+
+        char req[256];
+        read(client, req, sizeof(req) - 1); // drain the request
+
+        std::string body;
+        {
+            std::lock_guard<std::mutex> lock(connection_mutex_);
+            body = "{\"port\":" + std::to_string(listen_port_) + ",\"backends\":[";
+            for (size_t i = 0; i < backend_ports_.size(); ++i) {
+                if (i) body += ",";
+                body += "{\"port\":"        + std::to_string(backend_ports_[i])  +
+                        ",\"connections\":" + std::to_string(active_connections_[i]) +
+                        ",\"healthy\":"     + (backend_healthy_[i] ? "true" : "false") + "}";
+            }
+            body += "]}";
+        }
+
+        std::string response =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n"
+            "Connection: close\r\n"
+            "\r\n" + body;
+
+        send(client, response.data(), response.size(), MSG_NOSIGNAL);
+        close(client);
+    }
+
+    close(stats_socket_);
+    stats_socket_ = -1;
+}
+
 void LoadBalancer::stop() {
     if (stop_flag_.exchange(true)) return;
-    if (server_socket_ >= 0) {
-        close(server_socket_);
-        server_socket_ = -1;
-    }
-    if (health_check_thread_.joinable())
-        health_check_thread_.join();
+    if (server_socket_ >= 0) { close(server_socket_); server_socket_ = -1; }
+    if (stats_socket_  >= 0) { close(stats_socket_);  stats_socket_  = -1; }
+    if (health_check_thread_.joinable()) health_check_thread_.join();
+    if (stats_thread_.joinable())        stats_thread_.join();
 }
 
 void LoadBalancer::start() {
@@ -304,6 +388,7 @@ void LoadBalancer::start() {
     }
 
     health_check_thread_ = std::thread(&LoadBalancer::health_check_loop, this);
+    stats_thread_        = std::thread(&LoadBalancer::stats_loop, this);
     log_info("Listening on port " + std::to_string(listen_port_) +
              " with " + std::to_string(backend_ports_.size()) + " backends.");
 

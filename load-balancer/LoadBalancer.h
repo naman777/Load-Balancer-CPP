@@ -49,11 +49,14 @@ private:
     Algorithm algorithm_;
     ThreadPool thread_pool_;
     std::thread health_check_thread_;
+    std::thread stats_thread_;
     int server_socket_ = -1;
+    int stats_socket_  = -1;
 
     int select_and_reserve_backend(uint32_t client_ip = 0);
     void handle_client(int client_socket);
     void health_check_loop();
+    void stats_loop();
 };
 
 #endif // LOADBALANCER_H

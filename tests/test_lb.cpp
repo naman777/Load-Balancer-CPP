@@ -73,9 +73,17 @@ void test_ip_hash_deterministic() {
 }
 
 void test_ip_hash_skips_unhealthy() {
-    // IP 3 → 3 % 3 == 0, which is unhealthy; should fall to index 1.
-    std::vector<bool> healthy = {false, true, true};
-    assert(select_ip_hash(3, healthy) == 1);
+    // Mark the first candidate unhealthy — whichever backend FNV-1a picks for
+    // this IP, the result must be a different (healthy) backend.
+    std::vector<bool> healthy = {true, true, true};
+    uint32_t ip = 0xC0A80101;
+    int preferred = select_ip_hash(ip, healthy);
+    assert(preferred >= 0);
+
+    // Now mark that backend unhealthy and confirm a different one is returned.
+    healthy[preferred] = false;
+    int fallback = select_ip_hash(ip, healthy);
+    assert(fallback >= 0 && fallback != preferred);
     std::cout << "PASS  ip_hash_skips_unhealthy\n";
 }
 
