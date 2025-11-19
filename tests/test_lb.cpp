@@ -36,6 +36,42 @@ void test_lc_single_backend() {
     std::cout << "PASS  lc_single_backend\n";
 }
 
+// ── Weighted least-connections ────────────────────────────────────────────────
+
+void test_weighted_lc_prefers_heavy_backend() {
+    // weight=2 backend should absorb twice as many connections before
+    // the weight=1 backend is preferred.
+    std::vector<int>  conns   = {0, 0};
+    std::vector<int>  weights = {2, 1};
+    std::vector<bool> healthy = {true, true};
+    // ratio: 0/2=0.0, 0/1=0.0 → tie; first wins (index 0)
+    assert(select_weighted_lc(conns, weights, healthy) == 0);
+    // After 1 connection to 0: ratios 1/2=0.5 vs 0/1=0.0 → pick 1
+    conns[0] = 1;
+    assert(select_weighted_lc(conns, weights, healthy) == 1);
+    // After 1 on each: 1/2=0.5 vs 1/1=1.0 → pick 0
+    conns[1] = 1;
+    assert(select_weighted_lc(conns, weights, healthy) == 0);
+    std::cout << "PASS  weighted_lc_prefers_heavy_backend\n";
+}
+
+void test_weighted_lc_skips_unhealthy() {
+    std::vector<int>  conns   = {0, 0};
+    std::vector<int>  weights = {2, 1};
+    std::vector<bool> healthy = {false, true};
+    assert(select_weighted_lc(conns, weights, healthy) == 1);
+    std::cout << "PASS  weighted_lc_skips_unhealthy\n";
+}
+
+void test_weighted_lc_uniform_weights_matches_lc() {
+    std::vector<int>  conns   = {3, 1, 5};
+    std::vector<int>  weights = {1, 1, 1};
+    std::vector<bool> healthy = {true, true, true};
+    assert(select_weighted_lc(conns, weights, healthy) ==
+           select_least_connections(conns, healthy));
+    std::cout << "PASS  weighted_lc_uniform_weights_matches_lc\n";
+}
+
 // ── Round-robin ───────────────────────────────────────────────────────────────
 
 void test_rr_cycles_all_backends() {
@@ -143,6 +179,10 @@ int main() {
     test_lc_all_unhealthy();
     test_lc_single_backend();
 
+    test_weighted_lc_prefers_heavy_backend();
+    test_weighted_lc_skips_unhealthy();
+    test_weighted_lc_uniform_weights_matches_lc();
+
     test_rr_cycles_all_backends();
     test_rr_skips_unhealthy();
     test_rr_all_unhealthy();
@@ -156,6 +196,6 @@ int main() {
     test_threadpool_indexed_slots();
     test_threadpool_empty_is_safe();
 
-    std::cout << "\nAll 14 tests passed.\n";
+    std::cout << "\nAll 17 tests passed.\n";
     return 0;
 }

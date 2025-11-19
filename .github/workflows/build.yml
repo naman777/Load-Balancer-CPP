@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get install -y g++ make cmake
+        run: sudo apt-get install -y g++ make cmake curl
 
       - name: Build load balancer (Makefile)
         working-directory: load-balancer
@@ -27,6 +27,11 @@ jobs:
       - name: Build echo server
         working-directory: server
         run: make
+
+      - name: Integration tests
+        run: |
+          chmod +x scripts/test.sh
+          bash scripts/test.sh
 
       - name: Build & test with CMake
         run: |

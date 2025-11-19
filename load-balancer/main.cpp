@@ -2,11 +2,14 @@
 #include "config.h"
 #include "logger.h"
 #include <csignal>
+#include <cstdlib>
 #include <iostream>
+#include <pthread.h>
+#include <signal.h>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
-#include <cstdlib>
 
 static LoadBalancer* g_lb = nullptr;
 
@@ -26,23 +29,24 @@ static std::vector<int> parse_ports(const std::string& s) {
 
 static void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [options]\n"
-              << "  --config <file>     Load settings from config file (default: lb.conf)\n"
+              << "  --config <file>     Load settings from config file\n"
               << "  --port <n>          Listen port (default: 8080)\n"
               << "  --backends <p,...>  Comma-separated backend ports (default: 8001,8002,8003)\n"
+              << "  --weights <w,...>   Per-backend weights, same order as --backends\n"
               << "  --algo <lc|rr|ih>   Algorithm: least-conn | round-robin | ip-hash (default: lc)\n"
               << "  --threads <n>       Thread pool size (default: 16)\n"
-              << "  --help              Show this message\n";
+              << "  --help              Show this message\n"
+              << "\nSend SIGHUP to reload algorithm from the config file without restarting.\n";
 }
 
 int main(int argc, char* argv[]) {
-    std::signal(SIGINT, signal_handler);
+    std::signal(SIGINT,  signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // Defaults — config file overrides, then CLI flags override config.
     LBConfig cfg;
     std::string config_path;
 
-    // First pass: check for --config and --help before parsing the rest.
+    // First pass: find --config and --help.
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
@@ -57,19 +61,17 @@ int main(int argc, char* argv[]) {
     // Second pass: CLI flags override config file values.
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--config") { ++i; continue; } // already handled
-        else if (arg == "--port" && i + 1 < argc) {
-            cfg.port = std::stoi(argv[++i]);
-        } else if (arg == "--backends" && i + 1 < argc) {
-            cfg.backends = parse_ports(argv[++i]);
-        } else if (arg == "--algo" && i + 1 < argc) {
+        if (arg == "--config") { ++i; continue; }
+        else if (arg == "--port"     && i + 1 < argc) cfg.port    = std::stoi(argv[++i]);
+        else if (arg == "--backends" && i + 1 < argc) cfg.backends = parse_ports(argv[++i]);
+        else if (arg == "--weights"  && i + 1 < argc) cfg.weights  = parse_ports(argv[++i]);
+        else if (arg == "--threads"  && i + 1 < argc) cfg.threads  = static_cast<size_t>(std::stoi(argv[++i]));
+        else if (arg == "--algo"     && i + 1 < argc) {
             std::string a = argv[++i];
             if      (a == "rr") cfg.algo = Algorithm::ROUND_ROBIN;
             else if (a == "ih") cfg.algo = Algorithm::IP_HASH;
             else if (a == "lc") cfg.algo = Algorithm::LEAST_CONNECTIONS;
             else { std::cerr << "Unknown algo: " << a << "\n"; return 1; }
-        } else if (arg == "--threads" && i + 1 < argc) {
-            cfg.threads = static_cast<size_t>(std::stoi(argv[++i]));
         } else if (arg != "--help" && arg != "-h") {
             std::cerr << "Unknown argument: " << arg << "\n";
             print_usage(argv[0]);
@@ -79,8 +81,33 @@ int main(int argc, char* argv[]) {
 
     if (cfg.backends.empty()) { std::cerr << "At least one backend is required.\n"; return 1; }
 
-    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.threads);
+    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.threads, cfg.weights);
     g_lb = &lb;
+
+    // SIGHUP handler: reload algorithm from config file without restarting.
+    // We block SIGHUP in all threads and handle it exclusively via sigwait()
+    // in a dedicated thread — the only signal-safe way to call C++ code.
+    if (!config_path.empty()) {
+        sigset_t mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGHUP);
+        pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+
+        std::thread([mask, config_path, &lb] {
+            sigset_t m = mask;
+            while (true) {
+                int sig;
+                if (sigwait(&m, &sig) != 0 || sig != SIGHUP) break;
+                try {
+                    auto new_cfg = load_config(config_path);
+                    lb.set_algorithm(new_cfg.algo);
+                } catch (const std::exception& e) {
+                    log_err("SIGHUP reload failed: " + std::string(e.what()));
+                }
+            }
+        }).detach();
+    }
+
     lb.start();
     return 0;
 }

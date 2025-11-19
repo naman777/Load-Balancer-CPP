@@ -1,6 +1,7 @@
 #pragma once
 #include <climits>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 // Pure, side-effect-free backend selection functions.
@@ -12,6 +13,22 @@ inline int select_least_connections(const std::vector<int>& conns,
     int best = -1, min_c = INT_MAX;
     for (int i = 0; i < static_cast<int>(conns.size()); ++i) {
         if (healthy[i] && conns[i] < min_c) { min_c = conns[i]; best = i; }
+    }
+    return best;
+}
+
+// Weighted least-connections: pick backend with minimum connections/weight.
+// A backend with weight=2 absorbs twice as many connections before being
+// considered "busier" than a weight=1 backend.
+inline int select_weighted_lc(const std::vector<int>& conns,
+                               const std::vector<int>& weights,
+                               const std::vector<bool>& healthy) {
+    int best = -1;
+    double min_ratio = std::numeric_limits<double>::max();
+    for (int i = 0; i < static_cast<int>(conns.size()); ++i) {
+        if (!healthy[i] || weights[i] <= 0) continue;
+        double ratio = static_cast<double>(conns[i]) / weights[i];
+        if (ratio < min_ratio) { min_ratio = ratio; best = i; }
     }
     return best;
 }

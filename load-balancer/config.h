@@ -9,10 +9,11 @@
 #include <vector>
 
 struct LBConfig {
-    int port              = 8080;
+    int port                  = 8080;
     std::vector<int> backends = {8001, 8002, 8003};
-    Algorithm algo        = Algorithm::LEAST_CONNECTIONS;
-    size_t threads        = 16;
+    std::vector<int> weights  = {};  // empty = all weight 1
+    Algorithm algo            = Algorithm::LEAST_CONNECTIONS;
+    size_t threads            = 16;
 };
 
 // Parses a simple "key = value" config file.
@@ -54,6 +55,12 @@ inline LBConfig load_config(const std::string& path) {
             else if (val == "ih") cfg.algo = Algorithm::IP_HASH;
             else if (val == "lc") cfg.algo = Algorithm::LEAST_CONNECTIONS;
             else throw std::runtime_error("Unknown algo in config: " + val);
+        } else if (key == "weights") {
+            cfg.weights.clear();
+            std::stringstream ss(val);
+            std::string tok;
+            while (std::getline(ss, tok, ','))
+                cfg.weights.push_back(std::stoi(trim(tok)));
         } else if (key == "threads") {
             cfg.threads = static_cast<size_t>(std::stoi(val));
         }

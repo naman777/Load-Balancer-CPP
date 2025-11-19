@@ -146,14 +146,31 @@ static bool http_probe(int port) {
 
 // ─── LoadBalancer ─────────────────────────────────────────────────────────────
 
+static const char* algo_name(Algorithm a) {
+    switch (a) {
+        case Algorithm::LEAST_CONNECTIONS: return "least-connections";
+        case Algorithm::ROUND_ROBIN:       return "round-robin";
+        case Algorithm::IP_HASH:           return "ip-hash";
+    }
+    return "unknown";
+}
+
 LoadBalancer::LoadBalancer(int listen_port, const std::vector<int>& ports,
-                           Algorithm algo, size_t thread_pool_size)
+                           Algorithm algo, size_t thread_pool_size,
+                           std::vector<int> weights)
     : listen_port_(listen_port),
       backend_ports_(ports),
+      backend_weights_(weights.empty() ? std::vector<int>(ports.size(), 1)
+                                       : std::move(weights)),
       active_connections_(ports.size(), 0),
       backend_healthy_(ports.size(), true),
       algorithm_(algo),
       thread_pool_(thread_pool_size) {}
+
+void LoadBalancer::set_algorithm(Algorithm a) {
+    algorithm_.store(a, std::memory_order_relaxed);
+    log_info(std::string("Algorithm changed to ") + algo_name(a));
+}
 
 LoadBalancer::~LoadBalancer() {
     stop();
@@ -162,13 +179,14 @@ LoadBalancer::~LoadBalancer() {
 int LoadBalancer::select_and_reserve_backend(uint32_t client_ip) {
     std::lock_guard<std::mutex> lock(connection_mutex_);
 
+    Algorithm algo = algorithm_.load(std::memory_order_relaxed);
     int idx = -1;
-    if (algorithm_ == Algorithm::ROUND_ROBIN)
+    if (algo == Algorithm::ROUND_ROBIN)
         idx = select_round_robin(rr_index_, backend_ports_.size(), backend_healthy_);
-    else if (algorithm_ == Algorithm::IP_HASH)
+    else if (algo == Algorithm::IP_HASH)
         idx = select_ip_hash(client_ip, backend_healthy_);
     else
-        idx = select_least_connections(active_connections_, backend_healthy_);
+        idx = select_weighted_lc(active_connections_, backend_weights_, backend_healthy_);
 
     if (idx >= 0) active_connections_[idx]++;
     return idx;
@@ -179,39 +197,51 @@ void LoadBalancer::handle_client(int client_socket) {
     socklen_t peer_len = sizeof(peer);
     getpeername(client_socket, reinterpret_cast<sockaddr*>(&peer), &peer_len);
 
-    int index = select_and_reserve_backend(ntohl(peer.sin_addr.s_addr));
-    if (index < 0) {
-        log_warn("No healthy backend — dropping connection.");
-        close(client_socket);
-        return;
-    }
+    uint32_t client_ip = ntohl(peer.sin_addr.s_addr);
 
-    int backend_port = backend_ports_[index];
-    int backend_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (backend_socket < 0) {
-        log_err("Failed to create backend socket: " + std::string(strerror(errno)));
-        std::lock_guard<std::mutex> lock(connection_mutex_);
-        active_connections_[index]--;
-        close(client_socket);
-        return;
-    }
+    // Retry across backends: if connect() fails, mark that backend unhealthy
+    // and try the next available one (up to all backends before giving up).
+    int index = -1;
+    int backend_socket = -1;
+    int backend_port = -1;
 
-    sockaddr_in backend_addr{};
-    backend_addr.sin_family = AF_INET;
-    backend_addr.sin_port = htons(backend_port);
-    inet_pton(AF_INET, "127.0.0.1", &backend_addr.sin_addr);
+    for (size_t attempt = 0; attempt < backend_ports_.size(); ++attempt) {
+        index = select_and_reserve_backend(client_ip);
+        if (index < 0) break; // no healthy backend at all
 
-    if (connect(backend_socket, reinterpret_cast<sockaddr*>(&backend_addr),
-                sizeof(backend_addr)) < 0) {
-        log_err("Failed to connect to backend port " + std::to_string(backend_port) +
-                ": " + strerror(errno));
+        backend_port = backend_ports_[index];
+        int bsock = socket(AF_INET, SOCK_STREAM, 0);
+        if (bsock < 0) {
+            log_err("socket() failed: " + std::string(strerror(errno)));
+            std::lock_guard<std::mutex> lock(connection_mutex_);
+            active_connections_[index]--;
+            break; // local resource issue — stop retrying
+        }
+
+        sockaddr_in baddr{};
+        baddr.sin_family = AF_INET;
+        baddr.sin_port   = htons(backend_port);
+        inet_pton(AF_INET, "127.0.0.1", &baddr.sin_addr);
+
+        if (connect(bsock, reinterpret_cast<sockaddr*>(&baddr), sizeof(baddr)) == 0) {
+            backend_socket = bsock;
+            break; // connected — proceed with this backend
+        }
+
+        // Connect failed: mark unhealthy and retry with the next backend.
+        close(bsock);
+        log_warn("Backend :" + std::to_string(backend_port) +
+                 " unreachable — trying next.");
         {
             std::lock_guard<std::mutex> lock(connection_mutex_);
             active_connections_[index]--;
             backend_healthy_[index] = false;
         }
+    }
+
+    if (backend_socket < 0) {
+        log_err("All backends unreachable — dropping connection.");
         close(client_socket);
-        close(backend_socket);
         return;
     }
 

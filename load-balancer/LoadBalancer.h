@@ -33,20 +33,23 @@ class LoadBalancer {
 public:
     LoadBalancer(int listen_port, const std::vector<int>& ports,
                  Algorithm algo = Algorithm::LEAST_CONNECTIONS,
-                 size_t thread_pool_size = 16);
+                 size_t thread_pool_size = 16,
+                 std::vector<int> weights = {});
     ~LoadBalancer();
     void start();
     void stop();
+    void set_algorithm(Algorithm a); // safe to call from any thread
 
 private:
     int listen_port_;
     std::vector<int> backend_ports_;
+    std::vector<int> backend_weights_; // weight >= 1; default 1 each
     std::vector<int> active_connections_;
     std::vector<bool> backend_healthy_;
     std::mutex connection_mutex_;
     std::atomic<bool> stop_flag_{false};
     int rr_index_ = 0;
-    Algorithm algorithm_;
+    std::atomic<Algorithm> algorithm_;
     ThreadPool thread_pool_;
     std::thread health_check_thread_;
     std::thread stats_thread_;
