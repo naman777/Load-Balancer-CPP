@@ -102,7 +102,7 @@ g++ -std=c++17 -pthread -o load_balancer main.o LoadBalancer.o
   --config <file>     Load settings from config file (default: lb.conf)
   --port <n>          Listen port (default: 8080)
   --backends <p,...>  Comma-separated backend ports (default: 8001,8002,8003)
-  --algo <lc|rr|ih>   Scheduling algorithm (default: lc)
+  --algo <lc|rr|ih|rh> Scheduling algorithm (default: lc)
   --threads <n>       Thread pool size (default: 16)
   --max-conn <n>      Max concurrent connections per backend; 0=unlimited (default: 0)
   --help              Show this message
@@ -155,7 +155,10 @@ While the load balancer is running, hit `http://localhost:8081/stats` for a JSON
 |------|-----------|----------|
 | `lc` | Least connections | Mixed request durations |
 | `rr` | Round robin | Uniform request durations |
-| `ih` | IP hash (FNV-1a) | Sticky sessions by client IP |
+| `ih` | IP hash (FNV-1a % n) | Sticky sessions, small stable clusters |
+| `rh` | Rendezvous / HRW | Sticky sessions with minimal remapping when backends are added or removed |
+
+`rh` (Rendezvous) is strictly better than `ih` for sticky-session use cases: adding or removing one backend remaps only ~1/n of clients, versus nearly all clients with plain modulo hashing.
 
 ---
 
@@ -173,14 +176,13 @@ While the load balancer is running, hit `http://localhost:8081/stats` for a JSON
 cd load-balancer && make test
 ```
 
-22 tests covering all three selection algorithms, weighted variants, per-backend connection cap edge cases, and ThreadPool concurrency correctness.
+26 tests covering all four selection algorithms (including Rendezvous remapping stability), weighted variants, per-backend connection cap edge cases, and ThreadPool concurrency correctness.
 
 ---
 
 ## Future Work
 
-- IP-hash with consistent hashing (Rendezvous / Jump hash) for minimal rehash when backends change
-- Dynamic backend add/remove via SIGHUP (currently only algo and weights reload; backend list changes require restart)
+- Dynamic backend add/remove via SIGHUP without restart (currently only algo and weights reload live)
 - HTTP/1.1 keep-alive support (requires full Content-Length / chunked transfer encoding parsing)
 
 ---

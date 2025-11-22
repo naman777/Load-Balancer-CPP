@@ -151,6 +151,7 @@ static const char* algo_name(Algorithm a) {
         case Algorithm::LEAST_CONNECTIONS: return "least-connections";
         case Algorithm::ROUND_ROBIN:       return "round-robin";
         case Algorithm::IP_HASH:           return "ip-hash";
+        case Algorithm::RENDEZVOUS:        return "rendezvous";
     }
     return "unknown";
 }
@@ -211,6 +212,8 @@ int LoadBalancer::select_and_reserve_backend(uint32_t client_ip) {
                                  active_connections_, backend_healthy_, mc);
     else if (algo == Algorithm::IP_HASH)
         idx = select_ip_hash(client_ip, backend_healthy_, mc, &active_connections_);
+    else if (algo == Algorithm::RENDEZVOUS)
+        idx = select_rendezvous(client_ip, backend_healthy_, mc, &active_connections_);
     else
         idx = select_weighted_lc(active_connections_, backend_weights_,
                                  backend_healthy_, mc);

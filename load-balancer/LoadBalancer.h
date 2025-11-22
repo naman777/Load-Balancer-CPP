@@ -12,7 +12,8 @@
 enum class Algorithm {
     LEAST_CONNECTIONS,
     ROUND_ROBIN,
-    IP_HASH
+    IP_HASH,
+    RENDEZVOUS  // consistent hashing — minimal remapping on topology changes
 };
 
 class ThreadPool {

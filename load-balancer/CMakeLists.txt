@@ -18,6 +18,12 @@ add_executable(echo_server
 )
 target_compile_options(echo_server PRIVATE -Wall -Wextra -O2)
 
+# Test client
+add_executable(client
+    ../client.cpp
+)
+target_compile_options(client PRIVATE -Wall -Wextra -O2)
+
 # Unit tests
 enable_testing()
 

@@ -33,7 +33,7 @@ static void print_usage(const char* prog) {
               << "  --port <n>          Listen port (default: 8080)\n"
               << "  --backends <p,...>  Comma-separated backend ports (default: 8001,8002,8003)\n"
               << "  --weights <w,...>   Per-backend weights, same order as --backends\n"
-              << "  --algo <lc|rr|ih>   Algorithm: least-conn | round-robin | ip-hash (default: lc)\n"
+              << "  --algo <lc|rr|ih|rh> Algorithm: least-conn | round-robin | ip-hash | rendezvous (default: lc)\n"
               << "  --threads <n>       Thread pool size (default: 16)\n"
               << "  --max-conn <n>      Max concurrent connections per backend; 0=unlimited (default: 0)\n"
               << "  --help              Show this message\n"
@@ -72,6 +72,7 @@ int main(int argc, char* argv[]) {
             std::string a = argv[++i];
             if      (a == "rr") cfg.algo = Algorithm::ROUND_ROBIN;
             else if (a == "ih") cfg.algo = Algorithm::IP_HASH;
+            else if (a == "rh") cfg.algo = Algorithm::RENDEZVOUS;
             else if (a == "lc") cfg.algo = Algorithm::LEAST_CONNECTIONS;
             else { std::cerr << "Unknown algo: " << a << "\n"; return 1; }
         } else if (arg != "--help" && arg != "-h") {

@@ -186,6 +186,51 @@ void test_ip_hash_all_unhealthy() {
     std::cout << "PASS  ip_hash_all_unhealthy\n";
 }
 
+// ── Rendezvous hash ───────────────────────────────────────────────────────────
+
+void test_rendezvous_deterministic() {
+    std::vector<bool> healthy = {true, true, true};
+    uint32_t ip = 0xC0A80101;
+    assert(select_rendezvous(ip, healthy) == select_rendezvous(ip, healthy));
+    std::cout << "PASS  rendezvous_deterministic\n";
+}
+
+void test_rendezvous_skips_unhealthy() {
+    std::vector<bool> healthy = {true, true, true};
+    uint32_t ip = 0xC0A80101;
+    int preferred = select_rendezvous(ip, healthy);
+    healthy[preferred] = false;
+    int fallback = select_rendezvous(ip, healthy);
+    assert(fallback >= 0 && fallback != preferred);
+    std::cout << "PASS  rendezvous_skips_unhealthy\n";
+}
+
+void test_rendezvous_all_unhealthy() {
+    std::vector<bool> healthy = {false, false, false};
+    assert(select_rendezvous(0xDEADBEEFu, healthy) == -1);
+    std::cout << "PASS  rendezvous_all_unhealthy\n";
+}
+
+void test_rendezvous_minimal_remapping() {
+    // Adding a backend should remap only ~1/n of IPs, not all of them.
+    // With 3 → 4 backends: expect ~75% of IPs to keep the same backend.
+    std::vector<bool> h3 = {true, true, true};
+    std::vector<bool> h4 = {true, true, true, true};
+
+    int same = 0;
+    const int N = 10000;
+    for (int i = 0; i < N; ++i) {
+        uint32_t ip = static_cast<uint32_t>(i * 2654435761u); // spread IPs
+        if (select_rendezvous(ip, h3) == select_rendezvous(ip, h4))
+            same++;
+    }
+    // Expect ~75% stability (3/4); allow ±5% tolerance.
+    double stability = static_cast<double>(same) / N;
+    assert(stability > 0.70 && stability < 0.80);
+    std::cout << "PASS  rendezvous_minimal_remapping ("
+              << static_cast<int>(stability * 100) << "% stable)\n";
+}
+
 // ── ThreadPool ────────────────────────────────────────────────────────────────
 
 void test_threadpool_executes_all_tasks() {
@@ -255,11 +300,16 @@ int main() {
     test_ip_hash_skips_unhealthy();
     test_ip_hash_all_unhealthy();
 
+    test_rendezvous_deterministic();
+    test_rendezvous_skips_unhealthy();
+    test_rendezvous_all_unhealthy();
+    test_rendezvous_minimal_remapping();
+
     test_threadpool_executes_all_tasks();
     test_threadpool_concurrent_increments();
     test_threadpool_indexed_slots();
     test_threadpool_empty_is_safe();
 
-    std::cout << "\nAll 22 tests passed.\n";
+    std::cout << "\nAll 26 tests passed.\n";
     return 0;
 }

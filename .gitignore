@@ -1,5 +1,8 @@
 /node_modules
 .claude
-load-balancer/*.o
-load-balancer/load_balancer
 build/
+/client
+load-balancer/load_balancer
+load-balancer/*.o
+tests/test_lb
+server/echo_server

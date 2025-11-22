@@ -92,3 +92,31 @@ inline int select_ip_hash(uint32_t client_ip, const std::vector<bool>& healthy,
     }
     return -1;
 }
+
+// Rendezvous (Highest Random Weight) hashing.
+//
+// Each backend gets a score = fnv1a(client_ip XOR backend_salt).
+// The backend with the highest score wins. When a backend is added or
+// removed, only the ~1/n fraction of clients mapped to that backend
+// get remapped — far less disruption than fnv1a(ip) % n (which remaps
+// nearly all clients on any topology change).
+inline uint32_t rendezvous_score(uint32_t client_ip, int backend_idx) {
+    // Knuth multiplicative hash mixes the backend index before XOR so
+    // adjacent indices produce very different salts.
+    uint32_t salt = static_cast<uint32_t>(backend_idx) * 2654435761u;
+    return fnv1a(client_ip ^ salt);
+}
+
+inline int select_rendezvous(uint32_t client_ip, const std::vector<bool>& healthy,
+                              int max_conn = 0,
+                              const std::vector<int>* conns = nullptr) {
+    int best = -1;
+    uint32_t best_score = 0;
+    for (int i = 0; i < static_cast<int>(healthy.size()); ++i) {
+        if (!healthy[i]) continue;
+        if (max_conn > 0 && conns && (*conns)[i] >= max_conn) continue;
+        uint32_t score = rendezvous_score(client_ip, i);
+        if (best < 0 || score > best_score) { best_score = score; best = i; }
+    }
+    return best;
+}

@@ -54,6 +54,7 @@ inline LBConfig load_config(const std::string& path) {
         } else if (key == "algo") {
             if (val == "rr")      cfg.algo = Algorithm::ROUND_ROBIN;
             else if (val == "ih") cfg.algo = Algorithm::IP_HASH;
+            else if (val == "rh") cfg.algo = Algorithm::RENDEZVOUS;
             else if (val == "lc") cfg.algo = Algorithm::LEAST_CONNECTIONS;
             else throw std::runtime_error("Unknown algo in config: " + val);
         } else if (key == "weights") {

@@ -1,3 +1,2 @@
 load_balancer
-LoadBalancer.o
-main.o
+*.o
