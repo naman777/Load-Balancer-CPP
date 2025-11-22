@@ -35,8 +35,9 @@ static void print_usage(const char* prog) {
               << "  --weights <w,...>   Per-backend weights, same order as --backends\n"
               << "  --algo <lc|rr|ih>   Algorithm: least-conn | round-robin | ip-hash (default: lc)\n"
               << "  --threads <n>       Thread pool size (default: 16)\n"
+              << "  --max-conn <n>      Max concurrent connections per backend; 0=unlimited (default: 0)\n"
               << "  --help              Show this message\n"
-              << "\nSend SIGHUP to reload algorithm from the config file without restarting.\n";
+              << "\nSend SIGHUP to reload algo and weights from the config file without restarting.\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -65,7 +66,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--port"     && i + 1 < argc) cfg.port    = std::stoi(argv[++i]);
         else if (arg == "--backends" && i + 1 < argc) cfg.backends = parse_ports(argv[++i]);
         else if (arg == "--weights"  && i + 1 < argc) cfg.weights  = parse_ports(argv[++i]);
-        else if (arg == "--threads"  && i + 1 < argc) cfg.threads  = static_cast<size_t>(std::stoi(argv[++i]));
+        else if (arg == "--threads"  && i + 1 < argc) cfg.threads   = static_cast<size_t>(std::stoi(argv[++i]));
+        else if (arg == "--max-conn" && i + 1 < argc) cfg.max_conn  = std::stoi(argv[++i]);
         else if (arg == "--algo"     && i + 1 < argc) {
             std::string a = argv[++i];
             if      (a == "rr") cfg.algo = Algorithm::ROUND_ROBIN;
@@ -81,26 +83,33 @@ int main(int argc, char* argv[]) {
 
     if (cfg.backends.empty()) { std::cerr << "At least one backend is required.\n"; return 1; }
 
-    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.threads, cfg.weights);
+    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.threads,
+                    cfg.weights, cfg.max_conn);
     g_lb = &lb;
 
-    // SIGHUP handler: reload algorithm from config file without restarting.
-    // We block SIGHUP in all threads and handle it exclusively via sigwait()
-    // in a dedicated thread — the only signal-safe way to call C++ code.
+    // SIGHUP: reload algorithm and weights from config file without restarting.
+    // SIGHUP is blocked in all threads and consumed exclusively via sigwait() —
+    // the only signal-safe way to call arbitrary C++ from a signal context.
     if (!config_path.empty()) {
         sigset_t mask;
         sigemptyset(&mask);
         sigaddset(&mask, SIGHUP);
         pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
-        std::thread([mask, config_path, &lb] {
+        std::vector<int> initial_backends = cfg.backends;
+
+        std::thread([mask, config_path, &lb, initial_backends] {
             sigset_t m = mask;
             while (true) {
                 int sig;
                 if (sigwait(&m, &sig) != 0 || sig != SIGHUP) break;
                 try {
-                    auto new_cfg = load_config(config_path);
-                    lb.set_algorithm(new_cfg.algo);
+                    auto nc = load_config(config_path);
+                    lb.set_algorithm(nc.algo);
+                    if (!nc.weights.empty()) lb.set_weights(nc.weights);
+                    if (nc.backends != initial_backends)
+                        log_warn("SIGHUP: backend list changes require restart — ignored.");
+                    log_info("SIGHUP: config reloaded from " + config_path);
                 } catch (const std::exception& e) {
                     log_err("SIGHUP reload failed: " + std::string(e.what()));
                 }

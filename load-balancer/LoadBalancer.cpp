@@ -157,19 +157,42 @@ static const char* algo_name(Algorithm a) {
 
 LoadBalancer::LoadBalancer(int listen_port, const std::vector<int>& ports,
                            Algorithm algo, size_t thread_pool_size,
-                           std::vector<int> weights)
+                           std::vector<int> weights, int max_conn)
     : listen_port_(listen_port),
       backend_ports_(ports),
       backend_weights_(weights.empty() ? std::vector<int>(ports.size(), 1)
                                        : std::move(weights)),
       active_connections_(ports.size(), 0),
       backend_healthy_(ports.size(), true),
+      max_conn_per_backend_(max_conn),
       algorithm_(algo),
-      thread_pool_(thread_pool_size) {}
+      thread_pool_(thread_pool_size) {
+    rebuild_rr_sequence();
+}
+
+void LoadBalancer::rebuild_rr_sequence() {
+    rr_sequence_.clear();
+    for (size_t i = 0; i < backend_ports_.size(); ++i)
+        for (int w = 0; w < backend_weights_[i]; ++w)
+            rr_sequence_.push_back(static_cast<int>(i));
+    rr_index_ = 0;
+}
 
 void LoadBalancer::set_algorithm(Algorithm a) {
     algorithm_.store(a, std::memory_order_relaxed);
     log_info(std::string("Algorithm changed to ") + algo_name(a));
+}
+
+void LoadBalancer::set_weights(const std::vector<int>& w) {
+    if (w.size() != backend_ports_.size()) {
+        log_warn("set_weights: size mismatch (" + std::to_string(w.size()) +
+                 " vs " + std::to_string(backend_ports_.size()) + ") — ignored.");
+        return;
+    }
+    std::lock_guard<std::mutex> lock(connection_mutex_);
+    backend_weights_ = w;
+    rebuild_rr_sequence();
+    log_info("Backend weights updated.");
 }
 
 LoadBalancer::~LoadBalancer() {
@@ -180,13 +203,17 @@ int LoadBalancer::select_and_reserve_backend(uint32_t client_ip) {
     std::lock_guard<std::mutex> lock(connection_mutex_);
 
     Algorithm algo = algorithm_.load(std::memory_order_relaxed);
+    int mc = max_conn_per_backend_;
     int idx = -1;
+
     if (algo == Algorithm::ROUND_ROBIN)
-        idx = select_round_robin(rr_index_, backend_ports_.size(), backend_healthy_);
+        idx = select_weighted_rr(rr_index_, rr_sequence_,
+                                 active_connections_, backend_healthy_, mc);
     else if (algo == Algorithm::IP_HASH)
-        idx = select_ip_hash(client_ip, backend_healthy_);
+        idx = select_ip_hash(client_ip, backend_healthy_, mc, &active_connections_);
     else
-        idx = select_weighted_lc(active_connections_, backend_weights_, backend_healthy_);
+        idx = select_weighted_lc(active_connections_, backend_weights_,
+                                 backend_healthy_, mc);
 
     if (idx >= 0) active_connections_[idx]++;
     return idx;

@@ -14,6 +14,7 @@ struct LBConfig {
     std::vector<int> weights  = {};  // empty = all weight 1
     Algorithm algo            = Algorithm::LEAST_CONNECTIONS;
     size_t threads            = 16;
+    int max_conn              = 0;   // 0 = unlimited
 };
 
 // Parses a simple "key = value" config file.
@@ -63,6 +64,8 @@ inline LBConfig load_config(const std::string& path) {
                 cfg.weights.push_back(std::stoi(trim(tok)));
         } else if (key == "threads") {
             cfg.threads = static_cast<size_t>(std::stoi(val));
+        } else if (key == "max_conn") {
+            cfg.max_conn = std::stoi(val);
         }
     }
     return cfg;

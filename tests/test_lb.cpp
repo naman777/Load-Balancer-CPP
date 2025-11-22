@@ -72,6 +72,26 @@ void test_weighted_lc_uniform_weights_matches_lc() {
     std::cout << "PASS  weighted_lc_uniform_weights_matches_lc\n";
 }
 
+// ── Connection cap (max_conn) ─────────────────────────────────────────────────
+
+void test_lc_respects_max_conn() {
+    // Both backends at cap — should return -1.
+    std::vector<int>  conns   = {5, 5};
+    std::vector<int>  weights = {1, 1};
+    std::vector<bool> healthy = {true, true};
+    assert(select_weighted_lc(conns, weights, healthy, /*max_conn=*/5) == -1);
+    std::cout << "PASS  lc_respects_max_conn\n";
+}
+
+void test_lc_routes_to_uncapped_backend() {
+    std::vector<int>  conns   = {5, 3};
+    std::vector<int>  weights = {1, 1};
+    std::vector<bool> healthy = {true, true};
+    // Backend 0 is at cap (5), backend 1 is not — must pick backend 1.
+    assert(select_weighted_lc(conns, weights, healthy, /*max_conn=*/5) == 1);
+    std::cout << "PASS  lc_routes_to_uncapped_backend\n";
+}
+
 // ── Round-robin ───────────────────────────────────────────────────────────────
 
 void test_rr_cycles_all_backends() {
@@ -97,6 +117,43 @@ void test_rr_all_unhealthy() {
     int idx = 0;
     assert(select_round_robin(idx, 2, healthy) == -1);
     std::cout << "PASS  rr_all_unhealthy\n";
+}
+
+// ── Weighted round-robin ──────────────────────────────────────────────────────
+
+void test_weighted_rr_proportional_distribution() {
+    // sequence for weights [2,1]: [0,0,1] — backend 0 gets 2/3 of traffic.
+    std::vector<int>  seq     = {0, 0, 1};
+    std::vector<int>  conns   = {0, 0};
+    std::vector<bool> healthy = {true, true};
+    int idx = 0;
+    int counts[2] = {0, 0};
+    for (int i = 0; i < 6; ++i) {
+        int b = select_weighted_rr(idx, seq, conns, healthy);
+        assert(b >= 0); counts[b]++;
+    }
+    assert(counts[0] == 4 && counts[1] == 2);
+    std::cout << "PASS  weighted_rr_proportional_distribution\n";
+}
+
+void test_weighted_rr_skips_unhealthy() {
+    std::vector<int>  seq     = {0, 0, 1};
+    std::vector<int>  conns   = {0, 0};
+    std::vector<bool> healthy = {false, true};
+    int idx = 0;
+    for (int i = 0; i < 3; ++i)
+        assert(select_weighted_rr(idx, seq, conns, healthy) == 1);
+    std::cout << "PASS  weighted_rr_skips_unhealthy\n";
+}
+
+void test_weighted_rr_respects_max_conn() {
+    std::vector<int>  seq     = {0, 1};
+    std::vector<int>  conns   = {5, 2};
+    std::vector<bool> healthy = {true, true};
+    int idx = 0;
+    // Backend 0 is at cap — must skip to backend 1.
+    assert(select_weighted_rr(idx, seq, conns, healthy, /*max_conn=*/5) == 1);
+    std::cout << "PASS  weighted_rr_respects_max_conn\n";
 }
 
 // ── IP-hash ───────────────────────────────────────────────────────────────────
@@ -183,6 +240,13 @@ int main() {
     test_weighted_lc_skips_unhealthy();
     test_weighted_lc_uniform_weights_matches_lc();
 
+    test_lc_respects_max_conn();
+    test_lc_routes_to_uncapped_backend();
+
+    test_weighted_rr_proportional_distribution();
+    test_weighted_rr_skips_unhealthy();
+    test_weighted_rr_respects_max_conn();
+
     test_rr_cycles_all_backends();
     test_rr_skips_unhealthy();
     test_rr_all_unhealthy();
@@ -196,6 +260,6 @@ int main() {
     test_threadpool_indexed_slots();
     test_threadpool_empty_is_safe();
 
-    std::cout << "\nAll 17 tests passed.\n";
+    std::cout << "\nAll 22 tests passed.\n";
     return 0;
 }

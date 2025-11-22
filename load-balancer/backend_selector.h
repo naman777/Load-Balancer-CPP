@@ -6,13 +6,17 @@
 
 // Pure, side-effect-free backend selection functions.
 // Callers must hold connection_mutex_ before invoking any of these.
-// Returning -1 means no healthy backend is available.
+// max_conn: per-backend connection cap; 0 = unlimited.
+// Returns -1 when no healthy, uncapped backend is available.
 
 inline int select_least_connections(const std::vector<int>& conns,
-                                    const std::vector<bool>& healthy) {
+                                    const std::vector<bool>& healthy,
+                                    int max_conn = 0) {
     int best = -1, min_c = INT_MAX;
     for (int i = 0; i < static_cast<int>(conns.size()); ++i) {
-        if (healthy[i] && conns[i] < min_c) { min_c = conns[i]; best = i; }
+        if (!healthy[i]) continue;
+        if (max_conn > 0 && conns[i] >= max_conn) continue;
+        if (conns[i] < min_c) { min_c = conns[i]; best = i; }
     }
     return best;
 }
@@ -22,11 +26,13 @@ inline int select_least_connections(const std::vector<int>& conns,
 // considered "busier" than a weight=1 backend.
 inline int select_weighted_lc(const std::vector<int>& conns,
                                const std::vector<int>& weights,
-                               const std::vector<bool>& healthy) {
+                               const std::vector<bool>& healthy,
+                               int max_conn = 0) {
     int best = -1;
     double min_ratio = std::numeric_limits<double>::max();
     for (int i = 0; i < static_cast<int>(conns.size()); ++i) {
         if (!healthy[i] || weights[i] <= 0) continue;
+        if (max_conn > 0 && conns[i] >= max_conn) continue;
         double ratio = static_cast<double>(conns[i]) / weights[i];
         if (ratio < min_ratio) { min_ratio = ratio; best = i; }
     }
@@ -34,10 +40,33 @@ inline int select_weighted_lc(const std::vector<int>& conns,
 }
 
 inline int select_round_robin(int& index, size_t n,
-                              const std::vector<bool>& healthy) {
+                               const std::vector<bool>& healthy,
+                               int max_conn = 0,
+                               const std::vector<int>* conns = nullptr) {
     for (size_t i = 0; i < n; ++i) {
         int idx = index++ % static_cast<int>(n);
-        if (healthy[idx]) return idx;
+        if (!healthy[idx]) continue;
+        if (max_conn > 0 && conns && (*conns)[idx] >= max_conn) continue;
+        return idx;
+    }
+    return -1;
+}
+
+// Weighted round-robin using a pre-expanded sequence.
+// sequence is built from weights: weights [2,1] → [0,0,1].
+// Cycles through sequence, skipping unhealthy or capped backends.
+inline int select_weighted_rr(int& index,
+                               const std::vector<int>& sequence,
+                               const std::vector<int>& conns,
+                               const std::vector<bool>& healthy,
+                               int max_conn = 0) {
+    const int n = static_cast<int>(sequence.size());
+    if (n == 0) return -1;
+    for (int i = 0; i < n; ++i) {
+        int backend = sequence[index++ % n];
+        if (!healthy[backend]) continue;
+        if (max_conn > 0 && conns[backend] >= max_conn) continue;
+        return backend;
     }
     return -1;
 }
@@ -49,13 +78,17 @@ inline uint32_t fnv1a(uint32_t ip) {
     return h;
 }
 
-// Hashes client IP with FNV-1a; walks forward to find a healthy backend.
-inline int select_ip_hash(uint32_t client_ip, const std::vector<bool>& healthy) {
+// Hashes client IP with FNV-1a; walks forward to find a healthy, uncapped backend.
+inline int select_ip_hash(uint32_t client_ip, const std::vector<bool>& healthy,
+                           int max_conn = 0,
+                           const std::vector<int>* conns = nullptr) {
     const size_t n = healthy.size();
     uint32_t h = fnv1a(client_ip);
     for (size_t i = 0; i < n; ++i) {
         int idx = static_cast<int>((h + i) % n);
-        if (healthy[idx]) return idx;
+        if (!healthy[idx]) continue;
+        if (max_conn > 0 && conns && (*conns)[idx] >= max_conn) continue;
+        return idx;
     }
     return -1;
 }

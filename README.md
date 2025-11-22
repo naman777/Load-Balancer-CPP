@@ -6,7 +6,7 @@ A production-quality TCP/HTTP load balancer written in C++17. Supports three sch
 
 ## Features
 
-- **Three algorithms** — least-connections (`lc`), round-robin (`rr`), IP-hash (`ih` via FNV-1a) selectable at startup or via config file
+- **Three algorithms** — least-connections (`lc`), round-robin (`rr`), IP-hash (`ih` via FNV-1a) selectable at startup or via config file; all support per-backend **weights** and a **connection cap**
 - **Thread pool** — fixed worker pool (default 16), no per-connection thread spawning
 - **Bidirectional proxy** via `select()` with a 30-second idle timeout and `Connection: close` injection to prevent keep-alive slot leaks
 - **Health checks** — background thread sends HTTP HEAD every 5 seconds; unhealthy backends are skipped without dropping existing connections
@@ -104,6 +104,7 @@ g++ -std=c++17 -pthread -o load_balancer main.o LoadBalancer.o
   --backends <p,...>  Comma-separated backend ports (default: 8001,8002,8003)
   --algo <lc|rr|ih>   Scheduling algorithm (default: lc)
   --threads <n>       Thread pool size (default: 16)
+  --max-conn <n>      Max concurrent connections per backend; 0=unlimited (default: 0)
   --help              Show this message
 ```
 
@@ -117,10 +118,16 @@ CLI flags override values from the config file.
 port     = 8080
 backends = 8001, 8002, 8003
 
+# Optional: relative weights per backend (same order as backends).
+# weights = 2, 1, 1
+
 # lc = least-connections | rr = round-robin | ih = ip-hash
 algo     = lc
 
 threads  = 16
+
+# Max concurrent connections routed to each backend; 0 = unlimited.
+# max_conn = 100
 ```
 
 ---
@@ -166,16 +173,15 @@ While the load balancer is running, hit `http://localhost:8081/stats` for a JSON
 cd load-balancer && make test
 ```
 
-14 tests covering all three selection algorithms (including edge cases: unhealthy backends, single backend, full-unhealthy fallback) and ThreadPool concurrency correctness.
+22 tests covering all three selection algorithms, weighted variants, per-backend connection cap edge cases, and ThreadPool concurrency correctness.
 
 ---
 
 ## Future Work
 
-- IP-hash with consistent hashing (Rendezvous / Jump hash) for minimal rehash on backend changes
-- Weighted backends — allow some servers to receive proportionally more traffic
-- Read backend list dynamically from config without restart
-- HTTP/1.1 keep-alive support (requires full request/response framing)
+- IP-hash with consistent hashing (Rendezvous / Jump hash) for minimal rehash when backends change
+- Dynamic backend add/remove via SIGHUP (currently only algo and weights reload; backend list changes require restart)
+- HTTP/1.1 keep-alive support (requires full Content-Length / chunked transfer encoding parsing)
 
 ---
 
