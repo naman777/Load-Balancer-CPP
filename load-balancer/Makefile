@@ -8,13 +8,15 @@ all: $(TARGET)
 $(TARGET): main.o LoadBalancer.o
 	$(CXX) $(CXXFLAGS) -o $(TARGET) main.o LoadBalancer.o
 
-main.o: main.cpp LoadBalancer.h
+HEADERS = LoadBalancer.h backend_selector.h logger.h config.h
+
+main.o: main.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c main.cpp
 
-LoadBalancer.o: LoadBalancer.cpp LoadBalancer.h
+LoadBalancer.o: LoadBalancer.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c LoadBalancer.cpp
 
-$(TEST_BIN): ../tests/test_lb.cpp LoadBalancer.o
+$(TEST_BIN): ../tests/test_lb.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -o $(TEST_BIN) ../tests/test_lb.cpp LoadBalancer.o
 
 test: $(TEST_BIN)

@@ -1,7 +1,9 @@
 #include "LoadBalancer.h"
 #include "backend_selector.h"
 #include "logger.h"
+#include <algorithm>
 #include <arpa/inet.h>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <climits>

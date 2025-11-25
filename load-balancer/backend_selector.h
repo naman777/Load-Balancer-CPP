@@ -39,19 +39,6 @@ inline int select_weighted_lc(const std::vector<int>& conns,
     return best;
 }
 
-inline int select_round_robin(int& index, size_t n,
-                               const std::vector<bool>& healthy,
-                               int max_conn = 0,
-                               const std::vector<int>* conns = nullptr) {
-    for (size_t i = 0; i < n; ++i) {
-        int idx = index++ % static_cast<int>(n);
-        if (!healthy[idx]) continue;
-        if (max_conn > 0 && conns && (*conns)[idx] >= max_conn) continue;
-        return idx;
-    }
-    return -1;
-}
-
 // Weighted round-robin using a pre-expanded sequence.
 // sequence is built from weights: weights [2,1] → [0,0,1].
 // Cycles through sequence, skipping unhealthy or capped backends.
