@@ -1,0 +1,34 @@
+[Unit]
+Description=C++ Load Balancer — always-on demo
+Documentation=https://github.com/naman777/Load-Balancer-CPP
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+
+# ── Change these to match your EC2 username ──────────────────────────────────
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Load-Balancer-CPP
+
+# Wrapper starts echo_server backends, then exec's the LB
+ExecStart=/bin/bash /home/ubuntu/Load-Balancer-CPP/scripts/start-all.sh
+
+# Kill echo_servers too when service stops (they share the same cgroup)
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+# ── Always restart — survive crashes, OOM-kills, anything ───────────────────
+Restart=always
+RestartSec=3
+
+# ── Logging — view with: journalctl -u lb -f ──────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lb
+
+[Install]
+# Automatically start on every boot
+WantedBy=multi-user.target

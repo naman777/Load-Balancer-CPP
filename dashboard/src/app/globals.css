@@ -1,0 +1,107 @@
+/* ─── Design Tokens ────────────────────────────────────────────────── */
+:root {
+  --bg:          #0a0d14;
+  --surface:     #111520;
+  --surface2:    #161c2d;
+  --border:      rgba(99, 120, 220, 0.18);
+  --border-glow: rgba(99, 120, 220, 0.45);
+
+  --accent:  #6378dc;
+  --accent2: #a78bfa;
+  --green:   #34d399;
+  --red:     #f87171;
+  --yellow:  #fbbf24;
+  --cyan:    #22d3ee;
+  --orange:  #fb923c;
+
+  --text:  #e2e8f0;
+  --muted: #64748b;
+  --dim:   #334155;
+
+  --radius:    12px;
+  --radius-sm: 8px;
+  --radius-xs: 4px;
+  --shadow:    0 4px 32px rgba(0, 0, 0, 0.5);
+  --glow:      0 0 24px rgba(99, 120, 220, 0.25);
+}
+
+/* ─── Reset ────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: "Inter", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Animated grid background */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: linear-gradient(rgba(99, 120, 220, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 120, 220, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* ─── Scrollbar ────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--dim);
+  border-radius: 3px;
+}
+
+/* ─── Shared card ──────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+  border-color: var(--border-glow);
+  box-shadow: var(--glow), var(--shadow);
+}
+
+/* ─── Section Title ────────────────────────────────────────────────── */
+.sectionTitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sectionTitle::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}

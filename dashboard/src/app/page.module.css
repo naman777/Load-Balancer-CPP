@@ -1,0 +1,385 @@
+.main {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+}
+
+.wrapper {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.logoArea {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.logoIcon {
+  width: 44px;
+  height: 44px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  box-shadow: var(--glow);
+  flex-shrink: 0;
+}
+
+.logoText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.logoTitle {
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(99, 120, 220, 0.15);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  font-size: 0.65rem;
+  color: var(--accent2);
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.logoSub {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.endpointInput {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  outline: none;
+  width: 210px;
+  transition: border-color 0.2s;
+}
+
+.endpointInput:focus {
+  border-color: var(--accent);
+}
+
+.statusPill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border: 1px solid;
+  transition: all 0.3s;
+  white-space: nowrap;
+}
+
+.connected {
+  color: var(--green);
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.disconnected {
+  color: var(--red);
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.connecting {
+  color: var(--yellow);
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.pulse {
+  animation: pulseDot 1.6s infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ── Section Title ───────────────────────────────────────────── */
+.sectionTitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sectionTitle::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Main Grid ───────────────────────────────────────────────── */
+.mainGrid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+@media (max-width: 900px) {
+  .mainGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.leftCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.rightCol {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Backends ────────────────────────────────────────────────── */
+.backendsGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.emptyState {
+  background: var(--surface2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* ── Algo Note ───────────────────────────────────────────────── */
+.algoNote {
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.algoNote code {
+  font-family: "JetBrains Mono", monospace;
+  background: var(--surface2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  color: var(--cyan);
+}
+
+/* ── Config table ────────────────────────────────────────────── */
+.configTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.configTable tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.configTable tr:last-child {
+  border-bottom: none;
+}
+
+.configTable td {
+  padding: 8px 4px;
+  font-size: 0.8rem;
+}
+
+.configTable td:first-child {
+  color: var(--muted);
+  width: 42%;
+}
+
+.configTable td:last-child {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--cyan);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+/* ── Refresh Bar ─────────────────────────────────────────────── */
+.refreshBar {
+  height: 2px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.refreshFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 99px;
+  animation: refreshShrink 2s linear infinite;
+}
+
+@keyframes refreshShrink {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
+/* ── Bottom Grid ─────────────────────────────────────────────── */
+.bottomGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+@media (max-width: 700px) {
+  .bottomGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Architecture ────────────────────────────────────────────── */
+.archBlock {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.archGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.archGroupTitle {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+  font-family: "Inter", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.archRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  font-size: 0.68rem;
+}
+
+.archDesc {
+  color: var(--muted);
+  padding-left: 12px;
+  font-size: 0.64rem;
+  line-height: 1.3;
+}
+
+/* ── Feature Chips ───────────────────────────────────────────── */
+.featuresRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.featureChip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8rem;
+  transition: border-color 0.2s, transform 0.2s;
+  cursor: default;
+}
+
+.featureChip:hover {
+  border-color: var(--border-glow);
+  transform: translateY(-1px);
+}
+
+.featureIcon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.featureTitle {
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.featureDesc {
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ── Load Test intro text ────────────────────────────────────── */
+.loadTestIntro {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+

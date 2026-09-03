@@ -381,8 +381,26 @@ void LoadBalancer::stats_loop() {
         int client = accept(stats_socket_, nullptr, nullptr);
         if (client < 0) continue;
 
-        char req[256];
+        char req[512] = {};
         read(client, req, sizeof(req) - 1); // drain the request
+        std::string req_str(req);
+
+        // CORS headers — allow browser dashboards on any origin to poll this endpoint.
+        const std::string cors_headers =
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Content-Type\r\n";
+
+        // Handle OPTIONS preflight (browsers send this before cross-origin GET).
+        if (req_str.substr(0, 7) == "OPTIONS") {
+            std::string preflight =
+                "HTTP/1.1 204 No Content\r\n" +
+                cors_headers +
+                "Connection: close\r\n\r\n";
+            send(client, preflight.data(), preflight.size(), MSG_NOSIGNAL);
+            close(client);
+            continue;
+        }
 
         std::string body;
         {
@@ -401,7 +419,8 @@ void LoadBalancer::stats_loop() {
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n"
+            "Connection: close\r\n" +
+            cors_headers +
             "\r\n" + body;
 
         send(client, response.data(), response.size(), MSG_NOSIGNAL);

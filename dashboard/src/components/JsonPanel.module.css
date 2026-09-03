@@ -1,0 +1,46 @@
+.block {
+  background: #070a10;
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.8;
+  color: var(--text);
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre;
+}
+
+.block::-webkit-scrollbar {
+  width: 4px;
+}
+.block::-webkit-scrollbar-thumb {
+  background: var(--dim);
+  border-radius: 2px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.err {
+  color: var(--red);
+  white-space: pre;
+}
+
+/* Injected via dangerouslySetInnerHTML — must use global selectors */
+:global(.jKey) {
+  color: #a5b4fc;
+}
+:global(.jStr) {
+  color: #34d399;
+}
+:global(.jNum) {
+  color: #fb923c;
+}
+:global(.jTrue) {
+  color: #34d399;
+}
+:global(.jFalse) {
+  color: #f87171;
+}

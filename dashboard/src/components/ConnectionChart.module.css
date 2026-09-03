@@ -1,0 +1,11 @@
+.wrapper {
+  position: relative;
+  height: 120px;
+  width: 100%;
+}
+
+.canvas {
+  border-radius: var(--radius-xs);
+  display: block;
+  width: 100%;
+}
