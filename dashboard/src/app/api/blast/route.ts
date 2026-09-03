@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const start = Date.now();
     return fetch(target, {
       method: "GET",
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(30000),
       headers: { "X-Request-Id": String(i + 1) },
     })
       .then(async (r) => {

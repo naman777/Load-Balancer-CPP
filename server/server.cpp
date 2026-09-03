@@ -14,6 +14,41 @@
 // Run one instance per backend port: ./echo_server 8001
 // Responds 200 OK with a JSON body identifying its own port.
 
+static void handle_client(int client, int port) {
+    char buf[4096];
+    ssize_t n = read(client, buf, sizeof(buf) - 1);
+    if (n > 0) buf[n] = '\0'; // consume the request (not inspected)
+
+    // Optional demo delay keeps connections visible in the live dashboard.
+    int delay_ms = 0;
+    if (n > 0) {
+        std::string request(buf);
+        const std::string marker = "delay=";
+        const size_t marker_pos = request.find(marker);
+        if (marker_pos != std::string::npos) {
+            try {
+                delay_ms = std::min(std::stoi(request.substr(marker_pos + marker.size())), 10000);
+            } catch (...) {
+                delay_ms = 0;
+            }
+        }
+    }
+    if (delay_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    }
+
+    std::string body   = "{\"port\":" + std::to_string(port) + "}";
+    std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n" + body;
+
+    send(client, response.data(), response.size(), MSG_NOSIGNAL);
+    close(client);
+}
+
 int main(int argc, char* argv[]) {
     int port = (argc > 1) ? std::stoi(argv[1]) : 8001;
 
@@ -39,38 +74,7 @@ int main(int argc, char* argv[]) {
         int client = accept(server_fd, nullptr, nullptr);
         if (client < 0) break;
 
-        char buf[4096];
-        ssize_t n = read(client, buf, sizeof(buf) - 1);
-        if (n > 0) buf[n] = '\0'; // consume the request (not inspected)
-
-        // Optional demo delay keeps connections visible in the live dashboard.
-        int delay_ms = 0;
-        if (n > 0) {
-            std::string request(buf);
-            const std::string marker = "delay=";
-            const size_t marker_pos = request.find(marker);
-            if (marker_pos != std::string::npos) {
-                try {
-                    delay_ms = std::min(std::stoi(request.substr(marker_pos + marker.size())), 10000);
-                } catch (...) {
-                    delay_ms = 0;
-                }
-            }
-        }
-        if (delay_ms > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-        }
-
-        std::string body   = "{\"port\":" + std::to_string(port) + "}";
-        std::string response =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n"
-            "\r\n" + body;
-
-        send(client, response.data(), response.size(), MSG_NOSIGNAL);
-        close(client);
+        std::thread(handle_client, client, port).detach();
     }
 
     close(server_fd);
