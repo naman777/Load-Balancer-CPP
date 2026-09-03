@@ -3,7 +3,7 @@
 # The LB process replaces this shell (exec), so systemd tracks it directly.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}") /.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Kill any stale echo_servers from a previous run
 pkill echo_server 2>/dev/null || true

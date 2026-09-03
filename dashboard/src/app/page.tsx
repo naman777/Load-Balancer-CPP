@@ -43,13 +43,13 @@ const ARCH_DECISIONS = [
 
 export default function Home() {
   const [endpoint, setEndpoint] = useState(
-    process.env.NEXT_PUBLIC_STATS_URL || "http://localhost:8081"
+    process.env.NEXT_PUBLIC_STATS_URL || "http://lb-backend.naman.sbs:8081"
   );
   const [algo, setAlgo] = useState<Algorithm>("lc");
 
   // LB frontend URL — used by the load test panel to fire requests
   const lbUrl = process.env.NEXT_PUBLIC_LB_URL ||
-    endpoint.replace(/:8081/, ":8080").replace(/\/stats$/, "");
+    "http://lb-backend.naman.sbs:8080";
 
   const { data, error, isLoading, logs, connHistory, pollCount } = useStats(endpoint);
 
@@ -85,7 +85,7 @@ export default function Home() {
               className={styles.endpointInput}
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
-              placeholder="http://localhost:8081"
+              placeholder="http://lb-backend.naman.sbs:8081"
               title="Stats endpoint base URL"
             />
             <div

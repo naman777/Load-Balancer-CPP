@@ -28,7 +28,7 @@ if [[ -z "$EC2_IP" || -z "$SSH_KEY" ]]; then
     exit 1
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}") /.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="$EC2_USER@$EC2_IP"
 REMOTE_DIR="/home/$EC2_USER/Load-Balancer-CPP"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no"
