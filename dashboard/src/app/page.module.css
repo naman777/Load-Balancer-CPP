@@ -5,9 +5,9 @@
 }
 
 .wrapper {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 24px 20px 60px;
+  padding: 24px 28px 60px;
 }
 
 /* ── Header ─────────────────────────────────────────────────── */
@@ -169,8 +169,8 @@
 /* ── Main Grid ───────────────────────────────────────────────── */
 .mainGrid {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 24px;
   margin-bottom: 20px;
 }
 

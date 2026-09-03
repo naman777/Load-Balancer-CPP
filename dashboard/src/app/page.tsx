@@ -157,6 +157,18 @@ export default function Home() {
                 </div>
               </div>
             </div>
+
+            <div style={{ marginTop: 20 }}>
+              <div className={styles.sectionTitle}>⚡ Live Load Test</div>
+              <div className="card">
+                <p className={styles.loadTestIntro}>
+                  Fire concurrent HTTP requests directly to the load balancer and watch how
+                  it distributes traffic across backends in real time. Connection counts above
+                  animate as the requests hit.
+                </p>
+                <LoadTestPanel lbUrl={lbUrl} />
+              </div>
+            </div>
           </div>
 
           {/* Right column */}
@@ -188,19 +200,6 @@ export default function Home() {
                 </tbody>
               </table>
             </div>
-          </div>
-        </div>
-
-        {/* ── Load Test ─────────────────────────────────────────── */}
-        <div style={{ marginBottom: 20 }}>
-          <div className={styles.sectionTitle}>⚡ Live Load Test</div>
-          <div className="card">
-            <p className={styles.loadTestIntro}>
-              Fire concurrent HTTP requests directly to the load balancer and watch how
-              it distributes traffic across backends in real time. Connection counts above
-              animate as the requests hit.
-            </p>
-            <LoadTestPanel lbUrl={lbUrl} />
           </div>
         </div>
 
