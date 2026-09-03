@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const { count, url } = await req.json();
 
   const n = Math.min(Math.max(Number(count) || 10, 1), 100);
-  const target = String(url || "http://localhost:8080");
+  const target = String(url || "http://13.206.180.74:8080");
 
   if (!target.startsWith("http://") && !target.startsWith("https://")) {
     return NextResponse.json({ error: "Invalid URL" }, { status: 400 });

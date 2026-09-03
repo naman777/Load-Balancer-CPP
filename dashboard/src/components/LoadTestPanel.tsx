@@ -75,7 +75,7 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
             className={styles.urlInput}
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="http://localhost:8080"
+            placeholder="http://13.206.180.74:8080"
             disabled={firing}
           />
         </div>

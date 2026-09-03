@@ -19,7 +19,7 @@ export function useStats(endpoint: string) {
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Dashboard started. Connecting to stats endpoint…" },
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: `Polling: ${url}` },
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Start LB: ./scripts/start.sh" },
-    { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Test:     curl http://localhost:8080/" },
+    { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Test:     curl http://13.206.180.74:8080/" },
   ]);
   const [connHistory, setConnHistory] = useState<number[]>([]);
   const [pollCount, setPollCount] = useState(0);
