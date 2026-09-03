@@ -20,12 +20,20 @@ interface Props {
 
 export default function LoadTestPanel({ lbUrl, onFired }: Props) {
   const [count, setCount] = useState(20);
+  const [holdMs, setHoldMs] = useState(0);
   const [url, setUrl] = useState(lbUrl);
   const [firing, setFiring] = useState(false);
   const [results, setResults] = useState<BlastResult[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [phase, setPhase] = useState<"idle" | "firing" | "done">("idle");
   const listRef = useRef<HTMLDivElement>(null);
+
+  function targetWithDemoDelay() {
+    if (!holdMs) return url;
+    const target = new URL(url);
+    target.searchParams.set("delay", String(holdMs));
+    return target.toString();
+  }
 
   async function fire() {
     setFiring(true);
@@ -37,7 +45,7 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
       const res = await fetch("/api/blast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count, url }),
+        body: JSON.stringify({ count, url: targetWithDemoDelay() }),
       });
       const data = await res.json();
       // Animate results in one by one for visual effect
@@ -99,6 +107,24 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
             <div className={styles.sliderTicks}>
               <span>1</span><span>25</span><span>50</span><span>75</span><span>100</span>
             </div>
+          </div>
+
+          <div className={styles.controlGroup}>
+            <label className={styles.controlLabel} htmlFor="demo-hold-select">
+              Demo response hold
+            </label>
+            <select
+              id="demo-hold-select"
+              className={styles.urlInput}
+              value={holdMs}
+              onChange={(e) => setHoldMs(Number(e.target.value))}
+              disabled={firing}
+            >
+              <option value={0}>Instant</option>
+              <option value={1000}>1 second</option>
+              <option value={3000}>3 seconds</option>
+              <option value={5000}>5 seconds</option>
+            </select>
           </div>
 
           <button

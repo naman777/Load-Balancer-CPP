@@ -2,6 +2,9 @@
 #include <string>
 #include <cstring>
 #include <cerrno>
+#include <algorithm>
+#include <chrono>
+#include <thread>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -39,6 +42,24 @@ int main(int argc, char* argv[]) {
         char buf[4096];
         ssize_t n = read(client, buf, sizeof(buf) - 1);
         if (n > 0) buf[n] = '\0'; // consume the request (not inspected)
+
+        // Optional demo delay keeps connections visible in the live dashboard.
+        int delay_ms = 0;
+        if (n > 0) {
+            std::string request(buf);
+            const std::string marker = "delay=";
+            const size_t marker_pos = request.find(marker);
+            if (marker_pos != std::string::npos) {
+                try {
+                    delay_ms = std::min(std::stoi(request.substr(marker_pos + marker.size())), 10000);
+                } catch (...) {
+                    delay_ms = 0;
+                }
+            }
+        }
+        if (delay_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
 
         std::string body   = "{\"port\":" + std::to_string(port) + "}";
         std::string response =
