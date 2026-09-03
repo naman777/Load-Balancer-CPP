@@ -13,7 +13,10 @@ const fetcher = async (url: string): Promise<StatsResponse> => {
 };
 
 export function useStats(endpoint: string) {
-  const url = `${endpoint.replace(/\/$/, "")}/stats`;
+  const normalizedEndpoint = endpoint.replace(/\/$/, "");
+  const url = normalizedEndpoint.endsWith("/stats")
+    ? normalizedEndpoint
+    : `${normalizedEndpoint}/stats`;
   const prevRef = useRef<StatsResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Dashboard started. Connecting to stats endpoint…" },
