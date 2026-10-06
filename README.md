@@ -572,6 +572,32 @@ A consistent hash ring (like in Cassandra/Memcached) requires maintaining a sort
 
 ---
 
+## Benchmarks
+
+Measured on Ubuntu (WSL2, 16 logical cores, loopback). The LB, 3 `echo_server` backends and the load generator (`wrk` for throughput, a custom C++ client for latency) share one machine. Config: least-connections, 16 threads, 3 backends. Every request is a new TCP connection (backends reply `Connection: close`). Results vary run to run; some runs show a one-off ~1 s p99 spike from loopback SYN retransmits.
+
+| Metric | Result |
+|---|---|
+| Throughput | ~75K req/s sustained (62–80K across runs); a single backend directly gives ~40–45K |
+| Added latency, p50 | +~50 µs (58 µs direct vs 108 µs via LB) |
+| Added latency, p99 | +~105 µs (~165 µs direct vs ~270 µs via LB) |
+| Concurrent connections | 950 with 0 errors; crashes at ~1000 (see limitations) |
+| Failover | Backend marked unhealthy ~50 ms after SIGKILL; 0–1 failed requests out of ~67K (the one in flight at the kill) |
+| Recovery | Restarted backend receives traffic again after 0.9–3.4 s (5 s health-check cycle) |
+| Thread scaling (c=256) | 1 → 11.2K, 2 → 20.6K, 4 → 26.2K, 8 → 49.5K, 16 → 58.5K, 32 → 75.8K req/s |
+| Backend scaling | 1 → 40.8K, 2 → 71.8K, 3 → 74.9K req/s |
+| Rendezvous remap (200K keys) | Adding a 4th backend remaps 25.06% of keys (ideal 25%); removing one moves only that backend's keys |
+| IP-hash remap | Adding a 4th backend remaps 75% of keys (modulo hashing) |
+
+### Known limitations found while benchmarking
+
+- **`select()` fd limit:** the proxy loop uses `select()`, which aborts (`bit out of range 0 - FD_SETSIZE`) once an fd number reaches 1024. The accept loop queues accepted sockets without bound, so ~1000 concurrent connections crash the process.
+- **Thread-per-connection:** each worker serves one connection at a time, so slow or idle connections can occupy all workers and the rest queue.
+
+Both would be removed by an epoll-based event loop (see Future Work).
+
+---
+
 ## Prerequisites
 
 - **Compiler:** GCC ≥ 7 or Clang ≥ 5 (C++17 required)
@@ -583,6 +609,7 @@ A consistent hash ring (like in Cassandra/Memcached) requires maintaining a sort
 
 ## Future Work
 
+- **epoll event-driven architecture** — removes the `select()` 1024-fd crash and the one-connection-per-thread limit
 - **Dynamic backend add/remove via SIGHUP** — currently algo and weights reload live; changing the backend list requires restart because it would resize vectors while worker threads hold indices into them
 - **HTTP/1.1 keep-alive** — requires parsing `Content-Length` and chunked transfer encoding to correctly frame multiple requests per connection
 
