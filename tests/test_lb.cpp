@@ -94,28 +94,37 @@ void test_lc_routes_to_uncapped_backend() {
 
 // ── Round-robin ───────────────────────────────────────────────────────────────
 
+// Plain round-robin is weighted round-robin with equal weights, i.e. the
+// sequence [0,1,...,n-1].
+
 void test_rr_cycles_all_backends() {
+    std::vector<int>  seq     = {0, 1, 2};
+    std::vector<int>  conns   = {0, 0, 0};
     std::vector<bool> healthy = {true, true, true};
     int idx = 0;
-    assert(select_round_robin(idx, 3, healthy) == 0);
-    assert(select_round_robin(idx, 3, healthy) == 1);
-    assert(select_round_robin(idx, 3, healthy) == 2);
-    assert(select_round_robin(idx, 3, healthy) == 0); // wraps
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 0);
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 1);
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 2);
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 0); // wraps
     std::cout << "PASS  rr_cycles_all_backends\n";
 }
 
 void test_rr_skips_unhealthy() {
+    std::vector<int>  seq     = {0, 1, 2};
+    std::vector<int>  conns   = {0, 0, 0};
     std::vector<bool> healthy = {true, false, true};
     int idx = 0;
-    assert(select_round_robin(idx, 3, healthy) == 0);
-    assert(select_round_robin(idx, 3, healthy) == 2); // skips index 1
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 0);
+    assert(select_weighted_rr(idx, seq, conns, healthy) == 2); // skips index 1
     std::cout << "PASS  rr_skips_unhealthy\n";
 }
 
 void test_rr_all_unhealthy() {
+    std::vector<int>  seq     = {0, 1};
+    std::vector<int>  conns   = {0, 0};
     std::vector<bool> healthy = {false, false};
     int idx = 0;
-    assert(select_round_robin(idx, 2, healthy) == -1);
+    assert(select_weighted_rr(idx, seq, conns, healthy) == -1);
     std::cout << "PASS  rr_all_unhealthy\n";
 }
 
