@@ -1,10 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { lbUrlForHost } from "@/lib/backend";
 
 export const runtime = "nodejs";
 
-const statsUrl = process.env.LB_STATS_URL || "http://13.206.180.74:8081/stats";
+export async function GET(req: NextRequest) {
+  const statsUrl =
+    process.env.LB_STATS_URL || `${lbUrlForHost(req.headers.get("host"))}/stats`;
 
-export async function GET() {
   try {
     const response = await fetch(statsUrl, {
       signal: AbortSignal.timeout(5000),

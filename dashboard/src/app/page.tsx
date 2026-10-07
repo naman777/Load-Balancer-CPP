@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import styles from "./page.module.css";
 import { useStats } from "@/hooks/useStats";
 import type { Algorithm } from "@/types/stats";
+import { DEFAULT_LB_URL, lbUrlForHost } from "@/lib/backend";
 
 import KpiStrip from "@/components/KpiStrip";
 import BackendCard from "@/components/BackendCard";
@@ -41,6 +42,8 @@ const ARCH_DECISIONS = [
   { color: "var(--yellow)",  label: "sigwait()",          desc: "Safe async signal handling" },
 ];
 
+const subscribeNever = () => () => {};
+
 export default function Home() {
   const [endpoint, setEndpoint] = useState(
     process.env.NEXT_PUBLIC_STATS_URL || "/api/stats"
@@ -48,8 +51,13 @@ export default function Home() {
   const [algo, setAlgo] = useState<Algorithm>("lc");
 
   // LB frontend URL — used by the load test panel to fire requests
-  const lbUrl = process.env.NEXT_PUBLIC_LB_URL ||
-    "http://13.206.180.74:8080";
+  // Match the backend domain to the domain the dashboard was opened on.
+  const hostLbUrl = useSyncExternalStore(
+    subscribeNever,
+    () => lbUrlForHost(window.location.hostname),
+    () => DEFAULT_LB_URL
+  );
+  const lbUrl = process.env.NEXT_PUBLIC_LB_URL || hostLbUrl;
 
   const { data, error, isLoading, logs, connHistory, pollCount } = useStats(endpoint);
 
@@ -166,7 +174,7 @@ export default function Home() {
                   it distributes traffic across backends in real time. Connection counts above
                   animate as the requests hit.
                 </p>
-                <LoadTestPanel lbUrl={lbUrl} />
+                <LoadTestPanel key={lbUrl} lbUrl={lbUrl} />
               </div>
             </div>
           </div>

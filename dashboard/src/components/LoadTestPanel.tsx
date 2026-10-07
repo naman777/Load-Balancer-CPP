@@ -76,14 +76,14 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
       <div className={styles.controls}>
         <div className={styles.controlGroup}>
           <label className={styles.controlLabel}>
-            Target URL <span className={styles.urlHint}>(LB frontend port 8080)</span>
+            Target URL <span className={styles.urlHint}>(LB frontend)</span>
           </label>
           <input
             id="lb-target-url"
             className={styles.urlInput}
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="http://13.206.180.74:8080"
+            placeholder={lbUrl}
             disabled={firing}
           />
         </div>
