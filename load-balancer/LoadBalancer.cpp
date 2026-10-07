@@ -381,6 +381,12 @@ void LoadBalancer::stats_loop() {
         int client = accept(stats_socket_, nullptr, nullptr);
         if (client < 0) continue;
 
+        // This loop serves one client at a time, so a peer that connects and
+        // never sends (port scanners do this) would block it forever.
+        struct timeval io_timeout{2, 0};
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &io_timeout, sizeof(io_timeout));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &io_timeout, sizeof(io_timeout));
+
         char req[512] = {};
         read(client, req, sizeof(req) - 1); // drain the request
         std::string req_str(req);
