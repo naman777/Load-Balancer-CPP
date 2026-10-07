@@ -3,6 +3,7 @@
 import useSWR from "swr";
 import { useCallback, useRef, useState } from "react";
 import type { StatsResponse, LogEntry } from "@/types/stats";
+import { DEFAULT_LB_URL } from "@/lib/backend";
 
 let logIdCounter = 0;
 
@@ -22,7 +23,7 @@ export function useStats(endpoint: string) {
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Dashboard started. Connecting to stats endpoint…" },
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: `Polling: ${url}` },
     { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Start LB: ./scripts/start.sh" },
-    { id: logIdCounter++, ts: new Date(), level: "INFO", message: "Test:     curl http://13.206.180.74:8080/" },
+    { id: logIdCounter++, ts: new Date(), level: "INFO", message: `Test:     curl ${DEFAULT_LB_URL}/` },
   ]);
   const [connHistory, setConnHistory] = useState<number[]>([]);
   const [pollCount, setPollCount] = useState(0);

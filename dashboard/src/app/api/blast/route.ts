@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { lbUrlForHost } from "@/lib/backend";
 
 export const runtime = "nodejs";
 // Allow up to 30 seconds for a large blast
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest) {
   const { count, url } = await req.json();
 
   const n = Math.min(Math.max(Number(count) || 10, 1), 100);
-  const target = String(url || "http://13.206.180.74:8080");
+  const target = String(url || lbUrlForHost(req.headers.get("host")));
 
   if (!target.startsWith("http://") && !target.startsWith("https://")) {
     return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
