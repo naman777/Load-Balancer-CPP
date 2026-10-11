@@ -3,41 +3,42 @@ import type { AlgoMeta } from "@/types/stats";
 export const ALGO_META: AlgoMeta[] = [
   {
     key: "lc",
-    label: "Least Connections",
+    label: "Least connections",
     shortLabel: "LC",
     description: "Picks the backend with the fewest active connections, weighted by conn/weight ratio.",
     useCase: "Mixed workloads where some requests take much longer than others.",
-    complexity: "O(n) scan — atomicity guaranteed via single mutex lock",
+    complexity: "O(n) scan, atomic under a single mutex lock",
   },
   {
     key: "rr",
-    label: "Round Robin",
+    label: "Round robin",
     shortLabel: "RR",
     description: "Cycles through a pre-expanded weight sequence. With weights 2,1,1 the sequence is [A,A,B,C].",
     useCase: "Uniform request durations where you want simple, even distribution.",
-    complexity: "O(1) index increment — pre-expanded at startup",
+    complexity: "O(1) index increment, pre-expanded at startup",
   },
   {
     key: "ih",
-    label: "IP Hash",
+    label: "IP hash",
     shortLabel: "IH",
-    description: "Hashes client IP with FNV-1a, maps to backend with modulo, walks forward if unhealthy.",
-    useCase: "Sticky sessions on a small, stable cluster. Warning: adding a backend remaps ~all clients.",
-    complexity: "O(1) hash — deterministic per client IP",
+    description: "Hashes the client IP with FNV-1a, maps it to a backend with modulo, and walks forward if that one is unhealthy.",
+    useCase: "Sticky sessions on a small, stable cluster. Adding a backend remaps almost every client.",
+    complexity: "O(1) hash, deterministic per client IP",
   },
   {
     key: "rh",
-    label: "Rendezvous / HRW",
+    label: "Rendezvous hashing (HRW)",
     shortLabel: "RH",
-    description: "Each backend gets score = fnv1a(ip XOR knuth_hash(idx)). Highest score wins. Only ~1/n clients remap on backend add/remove.",
+    description: "Each backend gets score = fnv1a(ip XOR knuth_hash(idx)) and the highest score wins. Only about 1/n of clients remap when a backend is added or removed.",
     useCase: "Sticky sessions where the backend list may change with minimal disruption.",
-    complexity: "O(n) — beats consistent hash ring in practice due to cache locality",
+    complexity: "O(n), and faster than a consistent hash ring in practice thanks to cache locality",
   },
 ];
 
-export const BACKEND_COLORS = [
-  { from: "#6378dc", to: "#a78bfa", text: "#a78bfa" },
-  { from: "#22d3ee", to: "#6378dc", text: "#22d3ee" },
-  { from: "#34d399", to: "#22d3ee", text: "#34d399" },
-  { from: "#fb923c", to: "#fbbf24", text: "#fb923c" },
-];
+// Backends take a series colour by position, in a fixed order that is never
+// cycled: a fifth backend onwards falls back to neutral grey.
+const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
+
+export function seriesColor(index: number): string {
+  return SERIES[index] ?? "var(--series-other)";
+}

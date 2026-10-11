@@ -1,8 +1,15 @@
 "use client";
 
 import { useState, useRef } from "react";
-import styles from "./LoadTestPanel.module.css";
 import type { BlastResult } from "@/app/api/blast/route";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { Select } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 interface Summary {
   total: number;
@@ -25,7 +32,7 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
   const [firing, setFiring] = useState(false);
   const [results, setResults] = useState<BlastResult[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [phase, setPhase] = useState<"idle" | "firing" | "done">("idle");
+  const [failure, setFailure] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   function targetWithDemoDelay() {
@@ -37,9 +44,9 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
 
   async function fire() {
     setFiring(true);
-    setPhase("firing");
     setResults([]);
     setSummary(null);
+    setFailure(null);
 
     try {
       const res = await fetch("/api/blast", {
@@ -48,6 +55,9 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
         body: JSON.stringify({ count, url: targetWithDemoDelay() }),
       });
       const data = await res.json();
+      if (!res.ok || !Array.isArray(data.results)) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       // Animate results in one by one for visual effect
       const all: BlastResult[] = data.results;
       setSummary(data.summary);
@@ -58,181 +68,144 @@ export default function LoadTestPanel({ lbUrl, onFired }: Props) {
         if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
       }
 
-      setPhase("done");
       onFired?.();
     } catch (err) {
       console.error(err);
-      setPhase("done");
+      setFailure(err instanceof Error ? err.message : String(err));
     } finally {
       setFiring(false);
     }
   }
 
   const successPct = summary ? Math.round((summary.success / summary.total) * 100) : 0;
+  const slowest = Math.max(...results.map((r) => r.ms), 1);
+
+  const tiles = summary
+    ? [
+        { label: "Succeeded", value: String(summary.success) },
+        { label: "Failed", value: String(summary.failed), bad: summary.failed > 0 },
+        { label: "Average", value: `${summary.avgMs} ms` },
+        { label: "Fastest", value: `${summary.minMs} ms` },
+        { label: "Slowest", value: `${summary.maxMs} ms` },
+      ]
+    : [];
 
   return (
-    <div className={styles.panel}>
+    <div className="flex flex-col gap-6">
       {/* Controls */}
-      <div className={styles.controls}>
-        <div className={styles.controlGroup}>
-          <label className={styles.controlLabel}>
-            Target URL <span className={styles.urlHint}>(LB frontend)</span>
-          </label>
-          <input
-            id="lb-target-url"
-            className={styles.urlInput}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] lg:items-start">
+        <Field label="Target URL" hint="The load balancer frontend">
+          <Input
+            className="font-mono"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder={lbUrl}
             disabled={firing}
           />
-        </div>
+        </Field>
 
-        <div className={styles.sliderRow}>
-          <div className={styles.controlGroup} style={{ flex: 1 }}>
-            <label className={styles.controlLabel}>
-              Concurrent Requests
-              <span className={styles.countBadge}>{count}</span>
-            </label>
-            <input
-              id="request-count-slider"
-              type="range"
-              min={1}
-              max={100}
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-              className={styles.slider}
-              disabled={firing}
-            />
-            <div className={styles.sliderTicks}>
-              <span>1</span><span>25</span><span>50</span><span>75</span><span>100</span>
-            </div>
-          </div>
-
-          <div className={styles.controlGroup}>
-            <label className={styles.controlLabel} htmlFor="demo-hold-select">
-              Demo response hold
-            </label>
-            <select
-              id="demo-hold-select"
-              className={styles.urlInput}
-              value={holdMs}
-              onChange={(e) => setHoldMs(Number(e.target.value))}
-              disabled={firing}
-            >
-              <option value={0}>Instant</option>
-              <option value={1000}>1 second</option>
-              <option value={3000}>3 seconds</option>
-              <option value={5000}>5 seconds</option>
-            </select>
-          </div>
-
-          <button
-            id="fire-requests-btn"
-            className={`${styles.fireBtn} ${firing ? styles.fireBtnActive : ""}`}
-            onClick={fire}
+        <Field label="Concurrent requests" aside={<span className="font-semibold text-foreground tabular-nums">{count}</span>}>
+          <input
+            type="range"
+            min={1}
+            max={100}
+            value={count}
+            onChange={(e) => setCount(Number(e.target.value))}
             disabled={firing}
-            type="button"
-          >
-            {firing ? (
-              <>
-                <span className={styles.spinner} />
-                Firing…
-              </>
-            ) : (
-              <>🚀 Fire {count} Requests</>
-            )}
-          </button>
-        </div>
+            className="h-9 w-full cursor-pointer accent-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 dark:accent-neutral-200"
+          />
+        </Field>
+
+        <Field label="Response hold">
+          <Select value={holdMs} onChange={(e) => setHoldMs(Number(e.target.value))} disabled={firing}>
+            <option value={0}>Instant</option>
+            <option value={1000}>1 second</option>
+            <option value={3000}>3 seconds</option>
+            <option value={5000}>5 seconds</option>
+          </Select>
+        </Field>
+
+        <Button onClick={fire} disabled={firing} type="button" className="min-w-40 lg:mt-[26px]">
+          {firing ? (
+            <>
+              <Spinner label="Firing requests" className="text-current" />
+              Firing…
+            </>
+          ) : (
+            <>Fire {count} {count === 1 ? "request" : "requests"}</>
+          )}
+        </Button>
       </div>
 
-      {/* Burst animation */}
-      {phase === "firing" && (
-        <div className={styles.burstBar}>
-          {Array.from({ length: count }).map((_, i) => (
-            <div
-              key={i}
-              className={styles.burstDot}
-              style={{ animationDelay: `${(i * 40) % 600}ms` }}
-            />
-          ))}
-        </div>
+      {failure && (
+        <Alert tone="danger" title="The load test did not run">
+          {failure}
+        </Alert>
       )}
 
-      {/* Summary strip */}
+      {/* Summary */}
       {summary && (
-        <div className={styles.summaryStrip}>
-          <div className={styles.summaryCard} style={{ "--c": "var(--green)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{summary.success}</div>
-            <div className={styles.summaryLbl}>Success</div>
+        <div className="flex flex-col gap-4 border-t border-border pt-6">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-5">
+            {tiles.map((t) => (
+              <div key={t.label} className="flex flex-col-reverse gap-0.5">
+                <dt className="text-xs text-muted-foreground">{t.label}</dt>
+                <dd className={`font-montserrat text-2xl font-semibold tracking-tight ${t.bad ? "text-red-700 dark:text-red-400" : ""}`}>
+                  {t.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <div className="flex items-center gap-3">
+            <Progress value={successPct} aria-label="Success rate" />
+            <span className="shrink-0 text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground tabular-nums">{successPct}%</span> success rate
+            </span>
           </div>
-          <div className={styles.summaryCard} style={{ "--c": summary.failed > 0 ? "var(--red)" : "var(--muted)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{summary.failed}</div>
-            <div className={styles.summaryLbl}>Failed</div>
-          </div>
-          <div className={styles.summaryCard} style={{ "--c": "var(--cyan)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{summary.avgMs}ms</div>
-            <div className={styles.summaryLbl}>Avg Latency</div>
-          </div>
-          <div className={styles.summaryCard} style={{ "--c": "var(--accent2)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{summary.minMs}ms</div>
-            <div className={styles.summaryLbl}>Min</div>
-          </div>
-          <div className={styles.summaryCard} style={{ "--c": "var(--orange)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{summary.maxMs}ms</div>
-            <div className={styles.summaryLbl}>Max</div>
-          </div>
-          <div className={styles.summaryCard} style={{ "--c": successPct === 100 ? "var(--green)" : "var(--yellow)" } as React.CSSProperties}>
-            <div className={styles.summaryVal}>{successPct}%</div>
-            <div className={styles.summaryLbl}>Success Rate</div>
-          </div>
-        </div>
-      )}
-
-      {/* Success bar */}
-      {summary && (
-        <div className={styles.successBarTrack}>
-          <div
-            className={styles.successBarFill}
-            style={{ width: `${successPct}%` }}
-          />
         </div>
       )}
 
       {/* Results list */}
       {results.length > 0 && (
-        <div className={styles.resultsList} ref={listRef}>
-          <div className={styles.resultsHeader}>
-            <span className={styles.colId}>#</span>
-            <span className={styles.colStatus}>Status</span>
-            <span className={styles.colMs}>Time</span>
-            <span className={styles.colBody}>Response</span>
-          </div>
-          {results.map((r) => (
-            <div
-              key={r.id}
-              className={`${styles.resultRow} ${r.ok ? styles.resultOk : styles.resultErr}`}
-            >
-              <span className={styles.colId}>{String(r.id).padStart(2, "0")}</span>
-              <span className={`${styles.colStatus} ${r.ok ? styles.statusOk : styles.statusErr}`}>
-                {r.status > 0 ? r.status : "ERR"}
-              </span>
-              <span className={styles.colMs}>
-                <span className={styles.msBar} style={{ width: `${Math.min((r.ms / 2000) * 80, 80)}px` }} />
-                {r.ms}ms
-              </span>
-              <span className={styles.colBody}>{r.error ?? r.body}</span>
-            </div>
-          ))}
+        <div ref={listRef} className="max-h-80 overflow-y-auto rounded-xl">
+          <Table className="font-mono text-xs">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">#</TableHead>
+                <TableHead className="w-20">Status</TableHead>
+                <TableHead className="w-40">Time</TableHead>
+                <TableHead className="min-w-40">Response</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {results.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="text-muted-foreground tabular-nums">{String(r.id).padStart(2, "0")}</TableCell>
+                  <TableCell className={r.ok ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}>
+                    {r.status > 0 ? r.status : "ERR"}
+                  </TableCell>
+                  <TableCell>
+                    <span className="flex items-center gap-2 whitespace-nowrap tabular-nums">
+                      <span
+                        aria-hidden="true"
+                        className="h-1 rounded-full bg-foreground/40"
+                        style={{ width: `${Math.max((r.ms / slowest) * 64, 2)}px` }}
+                      />
+                      {r.ms} ms
+                    </span>
+                  </TableCell>
+                  <TableCell className="max-w-0 truncate text-muted-foreground">{r.error ?? r.body}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
 
-      {phase === "idle" && results.length === 0 && (
-        <div className={styles.emptyHint}>
-          <div className={styles.emptyIcon}>⚡</div>
-          <div>Fire requests to see them distributed across backends</div>
-          <div className={styles.emptySubHint}>Watch the backend connection counts animate above in real time</div>
-        </div>
+      {!firing && !summary && !failure && (
+        <p className="border-t border-border pt-5 text-sm text-muted-foreground">
+          Nothing fired yet. Results land here, and the backend connection counts above move as the requests arrive.
+        </p>
       )}
     </div>
   );

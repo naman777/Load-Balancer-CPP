@@ -45,13 +45,13 @@ export function useStats(endpoint: string) {
       const prev = prevRef.current;
       if (!prev) {
         const healthy = data.backends.filter((b) => b.healthy).length;
-        addLog("INFO", `Connected — ${data.backends.length} backends, ${healthy} healthy, ${total} active conns`);
+        addLog("INFO", `Connected: ${data.backends.length} backends, ${healthy} healthy, ${total} active conns`);
       } else {
         prev.backends.forEach((pb, i) => {
           const nb = data.backends[i];
           if (!nb) return;
-          if (pb.healthy && !nb.healthy) addLog("WARN", `Backend :${nb.port} is DOWN — removed from rotation`);
-          else if (!pb.healthy && nb.healthy) addLog("INFO", `Backend :${nb.port} is UP — added back to rotation`);
+          if (pb.healthy && !nb.healthy) addLog("WARN", `Backend :${nb.port} is DOWN, removed from rotation`);
+          else if (!pb.healthy && nb.healthy) addLog("INFO", `Backend :${nb.port} is UP, added back to rotation`);
           const delta = nb.connections - pb.connections;
           if (delta !== 0)
             addLog("INFO", `Backend :${nb.port} conns ${delta > 0 ? "+" : ""}${delta} → ${nb.connections}`);
@@ -60,7 +60,7 @@ export function useStats(endpoint: string) {
       prevRef.current = data;
     },
     onError: (err) => {
-      addLog("ERR", `Cannot reach ${url} — ${err.message}`);
+      addLog("ERR", `Cannot reach ${url}: ${err.message}`);
     },
   });
 

@@ -1,8 +1,8 @@
 "use client";
 
-import styles from "./AlgoSelector.module.css";
 import { ALGO_META } from "@/lib/constants";
 import type { Algorithm } from "@/types/stats";
+import { RadioGroup } from "@/components/ui/radio-group";
 
 interface Props {
   value: Algorithm;
@@ -11,32 +11,23 @@ interface Props {
 
 export default function AlgoSelector({ value, onChange }: Props) {
   return (
-    <div className={styles.wrapper}>
-      {ALGO_META.map((algo) => (
-        <button
-          key={algo.key}
-          className={`${styles.option} ${value === algo.key ? styles.active : ""}`}
-          onClick={() => onChange(algo.key)}
-          type="button"
-          id={`algo-btn-${algo.key}`}
-        >
-          <div className={styles.radio}>
-            <div className={styles.radioDot} />
-          </div>
-          <div className={styles.content}>
-            <div className={styles.label}>
-              {algo.label}
-              <span className={styles.key}>{algo.key}</span>
-            </div>
-            <div className={styles.desc}>{algo.description}</div>
-            <div className={styles.useCase}>
-              <span className={styles.useCaseLabel}>Best for: </span>
-              {algo.useCase}
-            </div>
-            <div className={styles.complexity}>{algo.complexity}</div>
-          </div>
-        </button>
-      ))}
-    </div>
+    <RadioGroup
+      aria-label="Balancing algorithm"
+      value={value}
+      onValueChange={(v) => onChange(v as Algorithm)}
+      className="gap-4"
+      options={ALGO_META.map((algo) => ({
+        value: algo.key,
+        label: (
+          <span className="flex flex-wrap items-center gap-2 font-medium">
+            {algo.label}
+            <code className="rounded border border-border px-1.5 font-mono text-[11px] font-normal text-muted-foreground">
+              {algo.key}
+            </code>
+          </span>
+        ),
+        hint: algo.description,
+      }))}
+    />
   );
 }
