@@ -1,74 +1,59 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import styles from "./BackendCard.module.css";
 import type { BackendStat } from "@/types/stats";
-import { BACKEND_COLORS } from "@/lib/constants";
+import { seriesColor } from "@/lib/constants";
+import { Card, CardBody } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
 
 interface Props {
   backend: BackendStat;
   index: number;
-  maxConn: number;
   totalConn: number;
-  prevConnections?: number;
 }
 
-export default function BackendCard({ backend, index, maxConn, totalConn, prevConnections }: Props) {
-  const colors = BACKEND_COLORS[index % BACKEND_COLORS.length];
-  const state = backend.healthy ? "healthy" : "unhealthy";
-  const fillPct = maxConn > 0 ? (backend.connections / maxConn) * 100 : 0;
-  const sharePct = totalConn > 0 ? ((backend.connections / totalConn) * 100).toFixed(1) : "0.0";
-
-  const packetRef = useRef<HTMLDivElement>(null);
-  const prevRef = useRef<number | undefined>(prevConnections);
-
-  useEffect(() => {
-    if (prevRef.current !== undefined && backend.connections > prevRef.current && packetRef.current) {
-      // Spawn a packet animation
-      const packet = document.createElement("div");
-      packet.className = styles.packet;
-      packet.style.background = colors.from;
-      packetRef.current.appendChild(packet);
-      setTimeout(() => packet.remove(), 900);
-    }
-    prevRef.current = backend.connections;
-  }, [backend.connections, colors.from]);
-
-  const icons = ["🖥️", "💻", "🗄️", "🔧"];
+export default function BackendCard({ backend, index, totalConn }: Props) {
+  const share = totalConn > 0 ? (backend.connections / totalConn) * 100 : 0;
 
   return (
-    <div className={`${styles.card} ${styles[state]}`} ref={packetRef}>
-      <div className={`${styles.icon} ${styles[state]}`}>{icons[index % icons.length]}</div>
-
-      <div className={styles.info}>
-        <div className={styles.name}>
-          <span>:{backend.port}</span>
-          <span
-            className={`${styles.badge} ${backend.healthy ? styles.badgeHealthy : styles.badgeUnhealthy}`}
-          >
-            {state.toUpperCase()}
+    <Card className={backend.healthy ? undefined : "sm:opacity-60"}>
+      <CardBody className="gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-mono text-sm font-medium">
+            <span
+              aria-hidden="true"
+              className="size-2.5 rounded-[3px]"
+              style={{ background: seriesColor(index) }}
+            />
+            :{backend.port}
           </span>
+          <Chip tone={backend.healthy ? "success" : "danger"}>
+            {backend.healthy ? "Healthy" : "Down"}
+          </Chip>
         </div>
-        <div className={styles.barRow}>
-          <div className={styles.barTrack}>
+
+        <div>
+          {/* Re-keyed on change so the new count eases in. */}
+          <div
+            key={backend.connections}
+            className="font-montserrat text-4xl font-semibold tracking-tight motion-safe:animate-chai-fade"
+          >
+            {backend.connections}
+          </div>
+          <div className="text-sm text-muted-foreground">active connections</div>
+        </div>
+
+        <div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.08] dark:bg-white/10">
             <div
-              className={styles.barFill}
-              style={{
-                width: `${fillPct}%`,
-                background: `linear-gradient(90deg, ${colors.from}, ${colors.to})`,
-              }}
+              className="h-full rounded-full transition-[width] duration-500 ease-out"
+              style={{ width: `${share}%`, background: seriesColor(index) }}
             />
           </div>
-          <span className={styles.shareLabel}>{sharePct}% share</span>
+          <div className="mt-1.5 text-xs text-muted-foreground">
+            {share.toFixed(1)}% of traffic
+          </div>
         </div>
-      </div>
-
-      <div className={styles.connBlock}>
-        <div className={styles.connCount} style={{ color: colors.text }}>
-          {backend.connections}
-        </div>
-        <div className={styles.connLabel}>connections</div>
-      </div>
-    </div>
+      </CardBody>
+    </Card>
   );
 }
