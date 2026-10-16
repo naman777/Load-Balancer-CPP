@@ -514,7 +514,13 @@ void test_stats_stream_pushes_changes() {
     TestBackend backend;
     RunningLB lb(18120, {backend.port()});
 
-    std::string once = http_get(18121, "/stats");
+    // The stats thread binds its port on its own schedule, after the proxy
+    // port RunningLB waited for, so give it up to 2 s as well.
+    std::string once;
+    for (int i = 0; i < 200 && once.empty(); ++i) {
+        once = http_get(18121, "/stats");
+        if (once.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     assert(once.compare(0, 15, "HTTP/1.1 200 OK") == 0);
     assert(once.find("{\"port\":18120,\"backends\":[") != std::string::npos);
 
