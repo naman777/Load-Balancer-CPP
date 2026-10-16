@@ -29,28 +29,31 @@ A production-quality TCP/HTTP load balancer written in C++17 from scratch — no
 
 ## Architecture Overview
 
+The proxy core follows nginx's event-driven worker model: a small, fixed number of worker threads, each running its own `epoll` loop over non-blocking sockets. One worker holds thousands of connections at once, so connection count is no longer tied to thread count.
+
 ```
-                        ┌─────────────────────────────────────────────┐
-                        │              Load Balancer Process           │
-                        │                                             │
-  Client                │  ┌──────────┐    ┌────────────────────────┐│
-  connections  ─────────┼─▶│  Accept  │───▶│      Thread Pool       ││
-  :8080                 │  │  Loop    │    │  (16 workers default)  ││
-                        │  └──────────┘    │                        ││
-                        │                  │  handle_client()  × N  ││
-                        │  ┌──────────┐    │  ┌──────────────────┐  ││
-                        │  │ Health   │    │  │select_and_reserve│  ││
-                        │  │ Check    │    │  │   _backend()     │  ││
-                        │  │ Thread   │    │  └────────┬─────────┘  ││
-                        │  │(HTTP HEAD│    │           │ proxy via  ││
-                        │  │ /5 secs) │    │      select() loop     ││
-                        │  └──────────┘    └────────────────────────┘│
-                        │                                             │
-                        │  ┌──────────┐                              │
-                        │  │  Stats   │  :8081  ◀── curl /stats     │
-                        │  │  Thread  │                              │
-                        │  └──────────┘                              │
-                        └──────────────────────┬──────────────────────┘
+                        ┌──────────────────────────────────────────────────┐
+                        │               Load Balancer Process              │
+                        │                                                  │
+  Client                │   SO_REUSEPORT: kernel hashes new connections    │
+  connections  ─────────┼──▶ across one listening socket per worker        │
+  :8080                 │                                                  │
+                        │  ┌───────────────┐ ┌───────────────┐             │
+                        │  │   Worker 0    │ │   Worker 1    │  ... × N    │
+                        │  │ epoll_wait()  │ │ epoll_wait()  │  (default:  │
+                        │  │ ┌───────────┐ │ │ ┌───────────┐ │   1 per     │
+                        │  │ │ session   │ │ │ │ session   │ │   core)     │
+                        │  │ │ session   │ │ │ │ session   │ │             │
+                        │  │ │ ...1000s  │ │ │ │ ...1000s  │ │             │
+                        │  │ └───────────┘ │ │ └───────────┘ │             │
+                        │  └───────┬───────┘ └───────┬───────┘             │
+                        │          └──── select_and_reserve_backend() ─────┤
+                        │                (one mutex, held for microseconds)│
+                        │  ┌──────────┐  ┌──────────┐                      │
+                        │  │ Health   │  │  Stats   │ :8081 ◀── /stats     │
+                        │  │ (HEAD/5s)│  │  Thread  │                      │
+                        │  └──────────┘  └──────────┘                      │
+                        └──────────────────────┬───────────────────────────┘
                                                │
                           ┌────────────────────┼────────────────────┐
                           ▼                    ▼                    ▼
@@ -58,54 +61,55 @@ A production-quality TCP/HTTP load balancer written in C++17 from scratch — no
                   (echo_server)        (echo_server)        (echo_server)
 ```
 
-The load balancer is a **single process with four threads** (besides worker pool threads):
-
 | Thread | Role |
 |--------|------|
-| Main thread | `accept()` loop — hands sockets to the thread pool |
-| Worker pool (N) | Each worker runs `handle_client()` for one connection |
+| Epoll workers (N) | Each owns an epoll instance and a `SO_REUSEPORT` listener; accepts, connects upstream and proxies every session it accepted |
 | Health check | Probes each backend via HTTP HEAD every 5 seconds |
 | Stats | Serves JSON on `listen_port + 1` |
+| Main thread | Calls `start()` and waits for the workers to exit |
+
+**How a worker stays non-blocking (the nginx pattern):**
+
+- **No accept lock.** Every worker binds its own socket to the port with `SO_REUSEPORT`, and the kernel spreads new connections across them. There is no shared accept queue and no thundering herd.
+- **Edge-triggered, registered once.** Client and upstream sockets are added with `EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET` exactly once. Per-socket `readable` / `writable` flags remember the last edge until a read or write returns `EAGAIN`, so the hot path makes no `epoll_ctl(MOD)` calls.
+- **Backpressure.** Each direction buffers at most 64 KB. When a buffer is full the worker stops reading that side and leaves the rest in the kernel until the other side drains, so a slow client cannot make the LB buffer a large response.
+- **Non-blocking upstream connect.** `connect()` returns `EINPROGRESS`, and `EPOLLOUT` + `SO_ERROR` report the result. A refused or timed-out (2 s) connect marks the backend unhealthy and moves on to the next backend.
+- **O(1) timers.** Sessions sit in a list ordered by last activity (and connecting sessions in a second list ordered by start time). Once a second the worker only checks the front of each list for the 30 s idle and 2 s connect timeouts.
+- **Deferred free.** A session closed while a batch of events is being handled is freed only after the batch, because a later event in the same batch can still point at it.
+- **Cached clock.** `now` is read once per `epoll_wait`, as in nginx.
 
 ---
 
 ## Connection Lifecycle
 
 ```
-1. Client connects to :8080
+1. Kernel picks a worker's SO_REUSEPORT listener; epoll reports it readable
         │
         ▼
-2. accept() returns client_socket
+2. accept4(SOCK_NONBLOCK) up to 64 at a time → new Session, client fd added to epoll
         │
         ▼
-3. ThreadPool::enqueue(handle_client)
-        │
-        ▼
-4. handle_client() runs on a worker thread
-   ├── getpeername() → extract client IP
-   ├── select_and_reserve_backend(client_ip)
-   │     └── acquires connection_mutex_
-   │         runs algorithm (lc/rr/ih/rh)
-   │         increments active_connections[idx]
-   │         releases lock
+3. select_and_reserve_backend(client_ip)
+   │     └── acquires connection_mutex_, runs algorithm (lc/rr/ih/rh),
+   │         increments active_connections[idx], releases lock
    │
-   ├── socket() + connect() to backend
-   │     └── on failure: decrement counter, mark unhealthy, retry next backend
+   ├── non-blocking connect() to backend → EINPROGRESS, upstream fd added to epoll
+   │     └── on refusal, error or 2 s timeout: decrement counter,
+   │         mark unhealthy, try the next backend
    │
-   ├── inject "Connection: close" into first HTTP request
-   │     (forces backend to close after response → clean end-of-data signal)
+   ├── client bytes are buffered until the request headers end ("\r\n\r\n"),
+   │     then "Connection: close" is injected (non-HTTP data passes through as is)
    │
-   ├── Bidirectional proxy loop (select, 30-second idle timeout)
-   │     client ──read──▶ send ──▶ backend
-   │     backend ──read──▶ send ──▶ client
-   │     (loop until either side closes or timeout)
+   ├── event-driven proxying, both directions, with 64 KB backpressure
+   │     client ──EPOLLIN──▶ buffer ──EPOLLOUT──▶ backend
+   │     backend ──EPOLLIN──▶ buffer ──EPOLLOUT──▶ client
+   │     client half-close is passed on with shutdown(SHUT_WR)
    │
-   └── close both sockets
-       decrement active_connections[idx]
-       log remaining count
+   └── backend EOF + response flushed (or error, or 30 s idle):
+       close both sockets, decrement active_connections[idx]
 ```
 
-**Atomicity guarantee:** backend selection and counter increment happen inside a single mutex lock, eliminating the TOCTOU race that would let two threads both pick the same "least loaded" backend.
+**Atomicity guarantee:** backend selection and counter increment happen inside a single mutex lock, eliminating the TOCTOU race that would let two workers both pick the same "least loaded" backend.
 
 ---
 
@@ -114,7 +118,7 @@ The load balancer is a **single process with four threads** (besides worker pool
 | Feature | Detail |
 |---------|--------|
 | **4 algorithms** | Least-connections (weighted), Round-robin (weighted), IP-hash (FNV-1a), Rendezvous/HRW |
-| **Thread pool** | Fixed-size worker pool (default 16) — no unbounded thread spawning |
+| **Epoll event loop** | nginx-style workers: one edge-triggered `epoll` loop per thread, `SO_REUSEPORT` listeners, non-blocking I/O with backpressure; thousands of connections per worker |
 | **Weighted backends** | Per-backend weights; heavier servers absorb proportionally more load |
 | **Connection cap** | Hard limit per backend; at-capacity backends are skipped automatically |
 | **Retry on failure** | If a backend's `connect()` fails, the next healthy backend is tried before dropping the client |
@@ -123,7 +127,7 @@ The load balancer is a **single process with four threads** (besides worker pool
 | **SIGHUP reload** | Algorithm and weights reload from config file at runtime without restart |
 | **Connection: close injection** | Modifies the first forwarded HTTP request to prevent keep-alive from holding backend slots |
 | **Config file** | INI-style `lb.conf`; CLI flags override |
-| **Graceful shutdown** | SIGINT/SIGTERM closes server socket, joins health/stats threads, drains pool |
+| **Graceful shutdown** | SIGINT/SIGTERM wakes every worker through an `eventfd`; workers close their sessions and exit, then health/stats threads are joined |
 | **SO_REUSEADDR** | Immediate restart after crash; no 60-second TIME_WAIT wait |
 | **Timestamped logging** | `[YYYY-MM-DD HH:MM:SS] [LEVEL] message` on stdout |
 
@@ -134,8 +138,8 @@ The load balancer is a **single process with four threads** (besides worker pool
 ```
 .
 ├── load-balancer/
-│   ├── LoadBalancer.h        # ThreadPool, Algorithm enum, LoadBalancer class declaration
-│   ├── LoadBalancer.cpp      # Full implementation (~470 lines)
+│   ├── LoadBalancer.h        # Algorithm enum, LoadBalancer class declaration
+│   ├── LoadBalancer.cpp      # Epoll workers, proxy state machine, health checks, stats
 │   ├── backend_selector.h    # Pure, lock-free algorithm functions (testable independently)
 │   ├── logger.h              # log_info / log_warn / log_err with timestamps
 │   ├── config.h              # INI config file parser (header-only)
@@ -148,7 +152,7 @@ The load balancer is a **single process with four threads** (besides worker pool
 │   └── Makefile
 │
 ├── tests/
-│   └── test_lb.cpp           # 26 unit tests — algorithms, weights, caps, ThreadPool
+│   └── test_lb.cpp           # 26 tests — algorithms, weights, caps, end-to-end proxying
 │
 ├── scripts/
 │   ├── start.sh              # Build + start 3 echo backends + load balancer
@@ -253,7 +257,8 @@ g++ -std=c++17 -pthread -o load_balancer LoadBalancer.o main.o
   --backends <p,...>   Comma-separated backend ports        (default: 8001,8002,8003)
   --weights <w,...>    Per-backend weights (same order)     (default: all 1)
   --algo <lc|rr|ih|rh> Scheduling algorithm                 (default: lc)
-  --threads <n>        Thread pool size                     (default: 16)
+  --workers <n>        Epoll worker threads                 (default: 1 per CPU core)
+                       (--threads is still accepted as an alias)
   --max-conn <n>       Max connections per backend; 0=none  (default: 0)
   --help               Show this message
 ```
@@ -299,8 +304,8 @@ backends = 8001, 8002, 8003
 # Algorithm: lc (least-connections) | rr (round-robin) | ih (ip-hash) | rh (rendezvous)
 algo     = lc
 
-# Worker thread pool size
-threads  = 16
+# Epoll worker threads (like nginx worker_processes). Omit or 0 = one per CPU core.
+# workers  = 4
 
 # Max concurrent connections routed to each backend; 0 = unlimited.
 # max_conn = 100
@@ -527,7 +532,7 @@ Tests are in `tests/test_lb.cpp` and cover:
 | Round-robin (weighted) | proportional distribution, skips unhealthy, respects cap |
 | IP hash | deterministic, skips unhealthy, all unhealthy |
 | Rendezvous | deterministic, skips unhealthy, all unhealthy, **statistical stability** (3→4 backends remaps ~25%, not ~100%) |
-| ThreadPool | executes all tasks, concurrent increments, indexed slots, empty pool |
+| Event loop (end to end, over loopback) | 400 concurrent round trips with `Connection: close` rewriting checked at the backend; 8 MB response through 64 KB backpressure buffers, byte for byte; failover past a dead backend; **1000 requests parked at a slow backend on 2 workers while a new request is still answered in < 1 s** |
 
 The Rendezvous stability test is particularly interesting — it generates 10,000 random IPs and asserts that ~75% ± 5% keep their backend assignment when a 4th backend is added, proving the consistent hashing property statistically.
 
@@ -574,34 +579,56 @@ A consistent hash ring (like in Cassandra/Memcached) requires maintaining a sort
 
 ## Benchmarks
 
-Measured on Ubuntu (WSL2, 16 logical cores, loopback). The LB, 3 `echo_server` backends and the load generator (`wrk` for throughput, a custom C++ client for latency) share one machine. Config: least-connections, 16 threads, 3 backends. Every request is a new TCP connection (backends reply `Connection: close`). Results vary run to run; some runs show a one-off ~1 s p99 spike from loopback SYN retransmits.
+### Thread pool vs. epoll event loop
+
+Measured on Ubuntu 24.04 under WSL2 (16 logical cores, loopback). The LB, 3 `echo_server` backends and `wrk` (4 threads, 15 s per run, `Connection: close`) all share one machine, so the absolute numbers are capped by the backends and the load generator, not the LB. Both builds ran under the same conditions with least-connections. "Old" is the previous 16-thread pool with `select()` proxying; "new" is the epoll build with 4 workers.
+
+**Fast responses (`GET /`)**
+
+| Concurrent conns | Old: req/s | Old: p99 | New: req/s | New: p99 |
+|---|---|---|---|---|
+| 100 | 22.0K | 22 ms | 27.4K | 15 ms |
+| 500 | 15.6K | 91 ms | 29.5K | 59 ms |
+| 1,000 | **crashed** (`FD_SETSIZE` abort) | — | 30.0K | 82 ms |
+| 2,000 | **crashed** | — | 31.1K | 121 ms |
+| 5,000 | **crashed** | — | 30.4K | 250 ms |
+| 10,000 | **crashed** | — | 33.9K | 473 ms |
+
+**Slow backend (`GET /?delay=100`, every response takes 100 ms)**
+
+| Concurrent conns | Old: req/s | Old: p50 | New: req/s | New: p50 |
+|---|---|---|---|---|
+| 100 | 159 | 603 ms | 987 | 100 ms |
+| 500 | 157 | 3.12 s | 4,873 | 100 ms |
+| 2,000 | — | — | 17,512 | 106 ms |
+
+The old build tops out at 16 connections ÷ 100 ms ≈ 160 req/s whatever the client count, because each pool thread is blocked for the whole life of one connection. The epoll workers are idle while they wait, so throughput grows with concurrency (c ÷ 100 ms) until the backends saturate.
+
+**Resources:** the epoll build runs 7 threads in total (4 workers + main, health, stats) and stayed at 2–6 MB RSS with 20K open fds at c=10,000. The old build used 19 threads and could not get past ~1,000 fds.
+
+At c=5,000 one thread-per-connection `echo_server` backend segfaulted under its own load. That run's 1,667 read errors come from that backend, not from the LB.
+
+### Other measurements (thread-pool build, earlier runs)
 
 | Metric | Result |
 |---|---|
-| Throughput | ~75K req/s sustained (62–80K across runs); a single backend directly gives ~40–45K |
 | Added latency, p50 | +~50 µs (58 µs direct vs 108 µs via LB) |
 | Added latency, p99 | +~105 µs (~165 µs direct vs ~270 µs via LB) |
-| Concurrent connections | 950 with 0 errors; crashes at ~1000 (see limitations) |
 | Failover | Backend marked unhealthy ~50 ms after SIGKILL; 0–1 failed requests out of ~67K (the one in flight at the kill) |
 | Recovery | Restarted backend receives traffic again after 0.9–3.4 s (5 s health-check cycle) |
-| Thread scaling (c=256) | 1 → 11.2K, 2 → 20.6K, 4 → 26.2K, 8 → 49.5K, 16 → 58.5K, 32 → 75.8K req/s |
-| Backend scaling | 1 → 40.8K, 2 → 71.8K, 3 → 74.9K req/s |
 | Rendezvous remap (200K keys) | Adding a 4th backend remaps 25.06% of keys (ideal 25%); removing one moves only that backend's keys |
 | IP-hash remap | Adding a 4th backend remaps 75% of keys (modulo hashing) |
 
-### Known limitations found while benchmarking
+### Found while load testing
 
-- **`select()` fd limit:** the proxy loop uses `select()`, which aborts (`bit out of range 0 - FD_SETSIZE`) once an fd number reaches 1024. The accept loop queues accepted sockets without bound, so ~1000 concurrent connections crash the process.
-- **Thread-per-connection:** each worker serves one connection at a time, so slow or idle connections can occupy all workers and the rest queue.
-
-Both would be removed by an epoll-based event loop (see Future Work).
+The first epoll build still crashed at ~2,000 connections with the same `FD_SETSIZE` abort. The proxy path no longer used `select()`, but the health checker's connect-with-timeout did, and once thousands of proxied sockets were open, its probe socket's fd number was past 1024. It now uses `poll()`, as does the stats listener.
 
 ---
 
 ## Prerequisites
 
 - **Compiler:** GCC ≥ 7 or Clang ≥ 5 (C++17 required)
-- **OS:** Linux or macOS (POSIX sockets, `pthread_sigmask`, `sigwait`)
+- **OS:** Linux (`epoll`, `eventfd`, `accept4`, `SO_REUSEPORT`); on Windows use WSL2
 - **Build tools:** `make` and/or `cmake ≥ 3.14`
 - **Testing:** `curl` (for integration tests)
 
@@ -609,7 +636,6 @@ Both would be removed by an epoll-based event loop (see Future Work).
 
 ## Future Work
 
-- **epoll event-driven architecture** — removes the `select()` 1024-fd crash and the one-connection-per-thread limit
 - **Dynamic backend add/remove via SIGHUP** — currently algo and weights reload live; changing the backend list requires restart because it would resize vectors while worker threads hold indices into them
 - **HTTP/1.1 keep-alive** — requires parsing `Content-Length` and chunked transfer encoding to correctly frame multiple requests per connection
 

@@ -2,10 +2,9 @@
 #define LOADBALANCER_H
 
 #include <atomic>
-#include <condition_variable>
-#include <functional>
+#include <cstdint>
+#include <memory>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 
@@ -16,29 +15,20 @@ enum class Algorithm {
     RENDEZVOUS  // consistent hashing — minimal remapping on topology changes
 };
 
-class ThreadPool {
-public:
-    explicit ThreadPool(size_t threads);
-    ~ThreadPool();
-    void enqueue(std::function<void()> task);
-
-private:
-    std::vector<std::thread> workers_;
-    std::queue<std::function<void()>> tasks_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    bool stop_ = false;
-};
-
+// Event-driven TCP/HTTP load balancer, modelled on nginx's worker design:
+// `worker_count` threads each run their own epoll loop over their own
+// SO_REUSEPORT listening socket, and every socket is non-blocking. A worker
+// can therefore hold thousands of connections at once, instead of one
+// connection per thread as with the old fixed-size thread pool.
 class LoadBalancer {
 public:
     LoadBalancer(int listen_port, const std::vector<int>& ports,
                  Algorithm algo           = Algorithm::LEAST_CONNECTIONS,
-                 size_t thread_pool_size  = 16,
+                 size_t worker_count      = 0,   // 0 = one per CPU core
                  std::vector<int> weights = {},
                  int max_conn             = 0);
     ~LoadBalancer();
-    void start();
+    void start(); // blocks until stop() is called
     void stop();
 
     // Runtime-updatable settings (safe to call from any thread).
@@ -46,6 +36,8 @@ public:
     void set_weights(const std::vector<int>& w); // rebuilds weighted-RR sequence
 
 private:
+    struct Worker; // one epoll event loop; defined in LoadBalancer.cpp
+
     int listen_port_;
     std::vector<int> backend_ports_;
     std::vector<int> backend_weights_;
@@ -57,15 +49,17 @@ private:
     int rr_index_              = 0;
     int max_conn_per_backend_  = 0;     // 0 = unlimited
     std::atomic<Algorithm> algorithm_;
-    ThreadPool thread_pool_;
+    size_t worker_count_;
+    std::mutex lifecycle_mutex_;        // guards workers_ between start() and stop()
+    std::vector<std::unique_ptr<Worker>> workers_;
     std::thread health_check_thread_;
     std::thread stats_thread_;
-    int server_socket_ = -1;
     int stats_socket_  = -1;
 
     void rebuild_rr_sequence(); // must be called under connection_mutex_
     int  select_and_reserve_backend(uint32_t client_ip = 0);
-    void handle_client(int client_socket);
+    void release_backend(int index, bool mark_unhealthy = false);
+    int  open_listen_socket();
     void health_check_loop();
     void stats_loop();
 };

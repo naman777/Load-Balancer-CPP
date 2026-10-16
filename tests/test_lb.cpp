@@ -1,8 +1,20 @@
 #include "../load-balancer/LoadBalancer.h"
 #include "../load-balancer/backend_selector.h"
+#include <arpa/inet.h>
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
+#include <mutex>
+#include <netinet/in.h>
+#include <string>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 // ── Least-connections ─────────────────────────────────────────────────────────
@@ -240,48 +252,249 @@ void test_rendezvous_minimal_remapping() {
               << static_cast<int>(stability * 100) << "% stable)\n";
 }
 
-// ── ThreadPool ────────────────────────────────────────────────────────────────
+// ── Event loop, end to end over loopback ─────────────────────────────────────
 
-void test_threadpool_executes_all_tasks() {
-    std::atomic<int> counter{0};
-    {
-        ThreadPool pool(4);
-        for (int i = 0; i < 100; ++i)
-            pool.enqueue([&counter] { counter++; });
+// Minimal HTTP backend for the proxy tests, one thread per connection. The
+// response body is `body_size` bytes of a repeating a–z pattern so tests can
+// check it arrived intact. While held, it parks every request except
+// "/fast", standing in for a slow upstream.
+class TestBackend {
+public:
+    explicit TestBackend(size_t body_size = 16) : body_size_(body_size) {
+        fd_ = socket(AF_INET, SOCK_STREAM, 0);
+        int one = 1;
+        setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in addr{};
+        addr.sin_family      = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        socklen_t len = sizeof(addr);
+        if (bind(fd_, reinterpret_cast<sockaddr*>(&addr), len) < 0 ||
+            listen(fd_, SOMAXCONN) < 0 ||
+            getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
+            std::perror("TestBackend");
+            std::exit(1);
+        }
+        port_     = ntohs(addr.sin_port);
+        acceptor_ = std::thread([this] { accept_loop(); });
     }
-    assert(counter == 100);
-    std::cout << "PASS  threadpool_executes_all_tasks\n";
+
+    ~TestBackend() {
+        release();
+        shutdown(fd_, SHUT_RDWR); // makes the blocked accept() return
+        close(fd_);
+        acceptor_.join();
+        for (auto& t : handlers_) t.join();
+    }
+
+    int  port() const     { return port_; }
+    int  requests() const { return requests_; }
+    bool every_request_had_connection_close() const { return !bad_connection_header_; }
+
+    void hold() { std::lock_guard<std::mutex> lock(m_); hold_ = true; }
+    void release() {
+        std::lock_guard<std::mutex> lock(m_);
+        hold_ = false;
+        cv_.notify_all();
+    }
+
+private:
+    int fd_   = -1;
+    int port_ = 0;
+    size_t body_size_;
+    std::thread acceptor_;
+    std::vector<std::thread> handlers_; // only touched by acceptor_ until it is joined
+    std::atomic<int>  requests_{0};
+    std::atomic<bool> bad_connection_header_{false};
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool hold_ = false;
+
+    void accept_loop() {
+        for (;;) {
+            int c = accept(fd_, nullptr, nullptr);
+            if (c < 0) return;
+            handlers_.emplace_back([this, c] { serve(c); });
+        }
+    }
+
+    void serve(int c) {
+        std::string req;
+        char buf[4096];
+        while (req.find("\r\n\r\n") == std::string::npos) {
+            ssize_t n = recv(c, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            req.append(buf, static_cast<size_t>(n));
+        }
+        if (req.empty()) { close(c); return; } // a bare connect, e.g. wait_for_port()
+
+        const bool health_probe = req.compare(0, 5, "HEAD ") == 0;
+        if (!health_probe) {
+            ++requests_;
+            // The LB must replace the client's keep-alive with exactly one close.
+            if (req.find("Connection: close") == std::string::npos ||
+                req.find("keep-alive") != std::string::npos)
+                bad_connection_header_ = true;
+            if (req.compare(0, 10, "GET /fast ") != 0) {
+                std::unique_lock<std::mutex> lock(m_);
+                cv_.wait(lock, [this] { return !hold_; });
+            }
+        }
+
+        std::string resp = "HTTP/1.1 200 OK\r\nContent-Length: " +
+                           std::to_string(body_size_) + "\r\nConnection: close\r\n\r\n";
+        if (!health_probe)
+            for (size_t i = 0; i < body_size_; ++i) resp += static_cast<char>('a' + i % 26);
+
+        for (size_t sent = 0; sent < resp.size();) {
+            ssize_t n = send(c, resp.data() + sent, resp.size() - sent, MSG_NOSIGNAL);
+            if (n <= 0) break;
+            sent += static_cast<size_t>(n);
+        }
+        close(c);
+    }
+};
+
+static int connect_loopback(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    timeval tv{10, 0}; // a stuck proxy fails the test instead of hanging it
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return fd;
 }
 
-void test_threadpool_concurrent_increments() {
-    std::atomic<int> counter{0};
-    {
-        ThreadPool pool(8);
-        for (int i = 0; i < 10000; ++i)
-            pool.enqueue([&counter] {
-                counter.fetch_add(1, std::memory_order_relaxed);
-            });
-    }
-    assert(counter == 10000);
-    std::cout << "PASS  threadpool_concurrent_increments\n";
+static void send_get(int fd, const std::string& path) {
+    // keep-alive on purpose: the LB has to rewrite it.
+    std::string req = "GET " + path + " HTTP/1.1\r\nHost: test\r\nConnection: keep-alive\r\n\r\n";
+    send(fd, req.data(), req.size(), MSG_NOSIGNAL);
 }
 
-void test_threadpool_indexed_slots() {
-    const int N = 200;
-    std::vector<std::atomic<int>> slots(N);
-    for (auto& s : slots) s.store(0);
-    {
-        ThreadPool pool(4);
-        for (int i = 0; i < N; ++i)
-            pool.enqueue([i, &slots] { slots[i].fetch_add(1); });
-    }
-    for (int i = 0; i < N; ++i) assert(slots[i].load() == 1);
-    std::cout << "PASS  threadpool_indexed_slots\n";
+static std::string read_to_eof(int fd) {
+    std::string resp;
+    char buf[65536];
+    ssize_t n;
+    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) resp.append(buf, static_cast<size_t>(n));
+    close(fd);
+    return resp;
 }
 
-void test_threadpool_empty_is_safe() {
-    ThreadPool pool(4);
-    std::cout << "PASS  threadpool_empty_is_safe\n";
+static std::string http_get(int port, const std::string& path) {
+    int fd = connect_loopback(port);
+    if (fd < 0) return "";
+    send_get(fd, path);
+    return read_to_eof(fd);
+}
+
+static bool response_ok(const std::string& resp, size_t body_size) {
+    if (resp.compare(0, 15, "HTTP/1.1 200 OK") != 0) return false;
+    size_t start = resp.find("\r\n\r\n");
+    if (start == std::string::npos || resp.size() - start - 4 != body_size) return false;
+    for (size_t i = 0; i < body_size; ++i)
+        if (resp[start + 4 + i] != static_cast<char>('a' + i % 26)) return false;
+    return true;
+}
+
+// Runs a LoadBalancer on its own thread for the length of a test.
+struct RunningLB {
+    LoadBalancer lb;
+    std::thread thread;
+
+    RunningLB(int port, const std::vector<int>& backends, size_t workers = 2)
+        : lb(port, backends, Algorithm::ROUND_ROBIN, workers) {
+        thread = std::thread([this] { lb.start(); });
+        for (int i = 0; i < 200; ++i) { // wait up to 2 s for the listener
+            int fd = connect_loopback(port);
+            if (fd >= 0) { close(fd); return; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::cerr << "LB did not start listening on " << port << "\n";
+        std::exit(1);
+    }
+    ~RunningLB() {
+        lb.stop();
+        thread.join();
+    }
+};
+
+void test_proxy_round_trip() {
+    TestBackend backend;
+    RunningLB lb(18080, {backend.port()});
+
+    std::atomic<int> ok{0};
+    std::vector<std::thread> clients;
+    for (int t = 0; t < 8; ++t)
+        clients.emplace_back([&ok] {
+            for (int i = 0; i < 50; ++i)
+                if (response_ok(http_get(18080, "/fast"), 16)) ++ok;
+        });
+    for (auto& c : clients) c.join();
+
+    assert(ok == 400);
+    assert(backend.requests() == 400);
+    assert(backend.every_request_had_connection_close());
+    std::cout << "PASS  proxy_round_trip\n";
+}
+
+void test_proxy_large_response() {
+    // Far beyond the per-direction buffer, so backpressure has to kick in.
+    const size_t size = 8 * 1024 * 1024;
+    TestBackend backend(size);
+    RunningLB lb(18090, {backend.port()});
+    assert(response_ok(http_get(18090, "/fast"), size));
+    std::cout << "PASS  proxy_large_response\n";
+}
+
+void test_proxy_fails_over_dead_backend() {
+    // A port nothing listens on: bind, read it back, close.
+    int probe = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = sizeof(addr);
+    bind(probe, reinterpret_cast<sockaddr*>(&addr), len);
+    getsockname(probe, reinterpret_cast<sockaddr*>(&addr), &len);
+    int dead_port = ntohs(addr.sin_port);
+    close(probe);
+
+    TestBackend backend;
+    RunningLB lb(18100, {dead_port, backend.port()});
+    for (int i = 0; i < 20; ++i) assert(response_ok(http_get(18100, "/fast"), 16));
+    std::cout << "PASS  proxy_fails_over_dead_backend\n";
+}
+
+// The old thread pool served one connection per thread, so 16 slow requests
+// blocked everything behind them. The event loop holds 1000 parked requests on
+// two workers and still answers a new one at once.
+void test_proxy_many_slow_connections() {
+    const int N = 1000;
+    TestBackend backend;
+    RunningLB lb(18110, {backend.port()});
+    backend.hold();
+
+    std::vector<int> fds;
+    for (int i = 0; i < N; ++i) {
+        int fd = connect_loopback(18110);
+        assert(fd >= 0);
+        send_get(fd, "/slow");
+        fds.push_back(fd);
+    }
+    for (int i = 0; i < 1000 && backend.requests() < N; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    assert(backend.requests() == N); // all 1000 are in flight at the same time
+
+    auto t0 = std::chrono::steady_clock::now();
+    assert(response_ok(http_get(18110, "/fast"), 16));
+    assert(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+
+    backend.release();
+    for (int fd : fds) assert(response_ok(read_to_eof(fd), 16));
+    std::cout << "PASS  proxy_many_slow_connections\n";
 }
 
 int main() {
@@ -314,10 +527,16 @@ int main() {
     test_rendezvous_all_unhealthy();
     test_rendezvous_minimal_remapping();
 
-    test_threadpool_executes_all_tasks();
-    test_threadpool_concurrent_increments();
-    test_threadpool_indexed_slots();
-    test_threadpool_empty_is_safe();
+    // 1000 parked connections need ~4000 fds across client, LB and backend.
+    rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+        rl.rlim_cur = rl.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &rl);
+    }
+    test_proxy_round_trip();
+    test_proxy_large_response();
+    test_proxy_fails_over_dead_backend();
+    test_proxy_many_slow_connections();
 
     std::cout << "\nAll 26 tests passed.\n";
     return 0;

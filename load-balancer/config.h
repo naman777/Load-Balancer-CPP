@@ -13,7 +13,7 @@ struct LBConfig {
     std::vector<int> backends = {8001, 8002, 8003};
     std::vector<int> weights  = {};  // empty = all weight 1
     Algorithm algo            = Algorithm::LEAST_CONNECTIONS;
-    size_t threads            = 16;
+    size_t workers            = 0;   // epoll worker threads; 0 = one per CPU core
     int max_conn              = 0;   // 0 = unlimited
 };
 
@@ -63,8 +63,8 @@ inline LBConfig load_config(const std::string& path) {
             std::string tok;
             while (std::getline(ss, tok, ','))
                 cfg.weights.push_back(std::stoi(trim(tok)));
-        } else if (key == "threads") {
-            cfg.threads = static_cast<size_t>(std::stoi(val));
+        } else if (key == "workers" || key == "threads") { // "threads" predates the epoll workers
+            cfg.workers = static_cast<size_t>(std::stoi(val));
         } else if (key == "max_conn") {
             cfg.max_conn = std::stoi(val);
         }

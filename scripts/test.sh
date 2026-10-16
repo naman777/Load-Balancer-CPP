@@ -32,7 +32,7 @@ sleep 0.3
 
 # ── Start load balancer ────────────────────────────────────────────────────────
 "$ROOT/load-balancer/load_balancer" \
-    --port 8080 --backends 8001,8002,8003 --algo lc --threads 8 &
+    --port 8080 --backends 8001,8002,8003 --algo lc --workers 4 &
 sleep 0.5
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
