@@ -497,6 +497,53 @@ void test_proxy_many_slow_connections() {
     std::cout << "PASS  proxy_many_slow_connections\n";
 }
 
+// Reads from `fd` until `needle` shows up in `buf` or the socket times out.
+static bool read_until(int fd, std::string& buf, const std::string& needle) {
+    char chunk[4096];
+    while (buf.find(needle) == std::string::npos) {
+        ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+        if (n <= 0) return false;
+        buf.append(chunk, static_cast<size_t>(n));
+    }
+    return true;
+}
+
+// /stats/stream pushes a snapshot on connect and a new one as soon as a
+// connection opens, with no polling by the client. /stats still answers once.
+void test_stats_stream_pushes_changes() {
+    TestBackend backend;
+    RunningLB lb(18120, {backend.port()});
+
+    std::string once = http_get(18121, "/stats");
+    assert(once.compare(0, 15, "HTTP/1.1 200 OK") == 0);
+    assert(once.find("{\"port\":18120,\"backends\":[") != std::string::npos);
+
+    int stream = connect_loopback(18121);
+    assert(stream >= 0);
+    const std::string req = "GET /stats/stream HTTP/1.1\r\nHost: test\r\n\r\n";
+    send(stream, req.data(), req.size(), MSG_NOSIGNAL);
+
+    std::string buf;
+    assert(read_until(stream, buf, "\"connections\":0,\"healthy\":true}]}\n\n"));
+    assert(buf.find("Content-Type: text/event-stream") != std::string::npos);
+    assert(buf.find("data: {\"port\":18120") != std::string::npos);
+
+    backend.hold(); // keeps the next request open, so the count stays at 1
+    int client = connect_loopback(18120);
+    send_get(client, "/slow");
+    auto t0 = std::chrono::steady_clock::now();
+    assert(read_until(stream, buf, "\"connections\":1"));
+    assert(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500));
+
+    // ...and another when it closes.
+    buf.clear();
+    backend.release();
+    assert(response_ok(read_to_eof(client), 16));
+    assert(read_until(stream, buf, "\"connections\":0,\"healthy\":true}]}\n\n"));
+    close(stream);
+    std::cout << "PASS  stats_stream_pushes_changes\n";
+}
+
 int main() {
     test_lc_picks_minimum();
     test_lc_skips_unhealthy();
@@ -537,7 +584,8 @@ int main() {
     test_proxy_large_response();
     test_proxy_fails_over_dead_backend();
     test_proxy_many_slow_connections();
+    test_stats_stream_pushes_changes();
 
-    std::cout << "\nAll 26 tests passed.\n";
+    std::cout << "\nAll 27 tests passed.\n";
     return 0;
 }

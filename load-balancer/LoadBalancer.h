@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -54,7 +55,6 @@ private:
     std::vector<std::unique_ptr<Worker>> workers_;
     std::thread health_check_thread_;
     std::thread stats_thread_;
-    int stats_socket_  = -1;
 
     void rebuild_rr_sequence(); // must be called under connection_mutex_
     int  select_and_reserve_backend(uint32_t client_ip = 0);
@@ -62,6 +62,7 @@ private:
     int  open_listen_socket();
     void health_check_loop();
     void stats_loop();
+    std::string stats_json(); // snapshot served by /stats and /stats/stream
 };
 
 #endif // LOADBALANCER_H

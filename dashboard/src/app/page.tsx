@@ -12,7 +12,7 @@ import {
   Scale,
   Shuffle,
 } from "lucide-react";
-import { useStats } from "@/hooks/useStats";
+import { HISTORY_INTERVAL_SEC, useStats } from "@/hooks/useStats";
 import type { Algorithm } from "@/types/stats";
 import { DEFAULT_LB_URL, lbUrlForHost } from "@/lib/backend";
 import { ALGO_META } from "@/lib/constants";
@@ -58,7 +58,7 @@ const FEATURES = [
   { icon: Layers, title: "Thread pool", desc: "A fixed pool of 16 workers, no unbounded spawning." },
   { icon: Gauge, title: "Connection cap", desc: "A hard limit per backend, skipped at capacity." },
   { icon: RefreshCw, title: "SIGHUP reload", desc: "Live config changes with zero downtime." },
-  { icon: Braces, title: "Stats endpoint", desc: "JSON served on :8081/stats." },
+  { icon: Braces, title: "Stats endpoint", desc: "JSON on :8081/stats, streamed live from /stats/stream." },
   { icon: Feather, title: "No libraries", desc: "Pure C++17 on POSIX sockets." },
 ];
 
@@ -66,7 +66,7 @@ const ARCH_THREADS = [
   { label: "Main thread", desc: "accept() loop on :8080" },
   { label: "Worker pool (16)", desc: "handle_client() for each connection" },
   { label: "Health check", desc: "HTTP HEAD every 5 s" },
-  { label: "Stats thread", desc: "JSON on :8081" },
+  { label: "Stats thread", desc: "JSON and SSE on :8081" },
   { label: "SIGHUP thread", desc: "sigwait(), then reload" },
 ];
 
@@ -100,8 +100,11 @@ export default function Home() {
     () => DEFAULT_LB_URL
   );
   const lbUrl = process.env.NEXT_PUBLIC_LB_URL || hostLbUrl;
+  // The browser reads the stream straight from the LB's stats server (through
+  // nginx), since a serverless /api route cannot hold a stream open.
+  const streamUrl = process.env.NEXT_PUBLIC_STATS_STREAM_URL || `${lbUrl}/stats/stream`;
 
-  const { data, error, logs, connHistory, pollCount } = useStats(endpoint);
+  const { data, error, logs, connHistory, updateCount, live } = useStats(endpoint, streamUrl);
 
   const backends = data?.backends ?? [];
   const totalConn = backends.reduce((s, b) => s + b.connections, 0);
@@ -139,7 +142,8 @@ export default function Home() {
           </h1>
           <p className="mt-4 max-w-3xl text-base text-neutral-700 sm:mt-6 md:text-xl dark:text-neutral-400">
             TCP and HTTP traffic spread across backends, in C++17 on plain POSIX sockets. This page reads{" "}
-            <Highlight>live stats from the running server</Highlight> every two seconds.
+            <Highlight>live stats from the running server</Highlight>, pushed over Server-Sent Events the moment they
+            change.
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-4">
             <Button asChild variant="solid">
@@ -157,7 +161,7 @@ export default function Home() {
             { label: "Listen port", value: data ? String(data.port) : "--" },
             { label: "Healthy backends", value: data ? `${healthy} of ${backends.length}` : "--" },
             { label: "Active connections", value: data ? String(totalConn) : "--" },
-            { label: "Polls so far", value: String(pollCount) },
+            { label: "Updates received", value: String(updateCount) },
           ]}
         />
 
@@ -169,7 +173,7 @@ export default function Home() {
           </SectionHead>
 
           <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <Field label="Stats endpoint" className="sm:w-80">
+            <Field label="Polling fallback endpoint" className="sm:w-80">
               <Input
                 className="font-mono"
                 value={endpoint}
@@ -180,7 +184,7 @@ export default function Home() {
             <div className="flex h-9 items-center gap-3 text-sm text-muted-foreground">
               {status}
               <span className="h-4 w-px bg-border" aria-hidden="true" />
-              Refreshes every 2 seconds
+              {live ? "Streaming live" : "Polling every 2 seconds"}
             </div>
           </div>
 
@@ -223,7 +227,7 @@ export default function Home() {
                   <CardTitle>Connections over time</CardTitle>
                   <CardText>Total active connections across all backends.</CardText>
                 </div>
-                <ConnectionChart history={connHistory} />
+                <ConnectionChart history={connHistory} intervalSec={HISTORY_INTERVAL_SEC} />
               </CardBody>
             </Card>
           </div>

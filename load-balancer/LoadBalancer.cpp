@@ -681,94 +681,236 @@ void LoadBalancer::health_check_loop() {
     }
 }
 
-// Serves a simple JSON stats page on listen_port_ + 1.
-// curl http://localhost:8081/stats
+// ─── Stats endpoint ───────────────────────────────────────────────────────────
+//
+// One thread serves listen_port_ + 1 with poll():
+//   GET /stats         one JSON snapshot, then close
+//   GET /stats/stream  Server-Sent Events: a snapshot on connect, then a new
+//                      one whenever the numbers change. Changes are checked
+//                      every 100 ms, so a stream gets at most 10 events/s
+//                      however busy the proxy is, and a ": ping" comment goes
+//                      out after 15 s of silence so proxies keep the stream open.
+// It is separate from the epoll workers, so dashboards watching the stats add
+// no work to the proxy's hot path.
+//
+//   curl http://localhost:8081/stats
+//   curl -N http://localhost:8081/stats/stream
+
+static constexpr size_t kMaxStatsClients  = 256;       // streams + pending requests
+static constexpr size_t kMaxStreamBacklog = 64 * 1024; // drop a stream that stops reading
+static constexpr auto   kStatsTick        = std::chrono::milliseconds(100);
+static constexpr auto   kStreamKeepalive  = std::chrono::seconds(15);
+static constexpr auto   kRequestTimeout   = std::chrono::seconds(2);
+
+// CORS headers — allow browser dashboards on any origin to read the endpoint.
+static const char* const kCorsHeaders =
+    "Access-Control-Allow-Origin: *\r\n"
+    "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+    "Access-Control-Allow-Headers: Content-Type\r\n";
+
+std::string LoadBalancer::stats_json() {
+    std::lock_guard<std::mutex> lock(connection_mutex_);
+    std::string body = "{\"port\":" + std::to_string(listen_port_) + ",\"backends\":[";
+    for (size_t i = 0; i < backend_ports_.size(); ++i) {
+        if (i) body += ",";
+        body += "{\"port\":"        + std::to_string(backend_ports_[i])  +
+                ",\"connections\":" + std::to_string(active_connections_[i]) +
+                ",\"healthy\":"     + (backend_healthy_[i] ? "true" : "false") + "}";
+    }
+    body += "]}";
+    return body;
+}
+
+namespace {
+
+struct StatsClient {
+    int fd = -1;
+    Clock::time_point accepted;
+    bool streaming = false;
+    bool done      = false; // close at the end of this pass
+    std::string request;    // bytes read until the end of the headers
+    std::string pending;    // stream bytes the socket has not taken yet
+};
+
+// Sends what the socket will take now. Returns false if the client is gone.
+bool flush_client(StatsClient& c) {
+    while (!c.pending.empty()) {
+        ssize_t n = send(c.fd, c.pending.data(), c.pending.size(), MSG_NOSIGNAL);
+        if (n > 0) { c.pending.erase(0, static_cast<size_t>(n)); continue; }
+        if (n < 0 && errno == EINTR) continue;
+        return n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+    }
+    return true;
+}
+
+// For one-shot responses: the socket is fresh and the reply is a few hundred
+// bytes, so it fits in the send buffer in one go.
+void reply_and_close(StatsClient& c, const std::string& response) {
+    ssize_t ignored = send(c.fd, response.data(), response.size(), MSG_NOSIGNAL);
+    (void)ignored;
+    c.done = true;
+}
+
+} // namespace
+
 void LoadBalancer::stats_loop() {
     int stats_port = listen_port_ + 1;
-    stats_socket_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (stats_socket_ < 0) {
+    int listen_fd  = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (listen_fd < 0) {
         log_warn("Could not create stats socket — stats endpoint disabled.");
         return;
     }
     int opt = 1;
-    setsockopt(stats_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(stats_port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(stats_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
-        listen(stats_socket_, 16) < 0) {
+    if (bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
+        listen(listen_fd, 64) < 0) {
         log_warn("Could not bind stats port " + std::to_string(stats_port));
-        close(stats_socket_);
-        stats_socket_ = -1;
+        close(listen_fd);
         return;
     }
     log_info("Stats endpoint listening on port " + std::to_string(stats_port) +
-             "  (curl http://localhost:" + std::to_string(stats_port) + "/stats)");
+             "  (curl http://localhost:" + std::to_string(stats_port) + "/stats, " +
+             "live: /stats/stream)");
+
+    std::vector<StatsClient> clients;
+    std::vector<pollfd> pfds;
+    std::string last_snapshot = stats_json();
+    auto now        = Clock::now();
+    auto next_tick  = now + kStatsTick;
+    auto last_event = now;
+
+    // Queues an event for every stream; one that has fallen too far behind is dropped.
+    auto broadcast = [&](const std::string& event) {
+        for (auto& c : clients) {
+            if (!c.streaming || c.done) continue;
+            if (c.pending.size() > kMaxStreamBacklog) { c.done = true; continue; }
+            c.pending += event;
+            if (!flush_client(c)) c.done = true;
+        }
+        last_event = now;
+    };
+
+    auto handle_request = [&](StatsClient& c) {
+        if (c.request.compare(0, 8, "OPTIONS ") == 0) {
+            reply_and_close(c, std::string("HTTP/1.1 204 No Content\r\n") + kCorsHeaders +
+                                   "Connection: close\r\n\r\n");
+            return;
+        }
+        if (c.request.compare(0, 18, "GET /stats/stream ") == 0 ||
+            c.request.compare(0, 18, "GET /stats/stream?") == 0) {
+            c.streaming = true;
+            // X-Accel-Buffering stops nginx from holding events back in its buffer.
+            c.pending = std::string("HTTP/1.1 200 OK\r\n"
+                                    "Content-Type: text/event-stream\r\n"
+                                    "Cache-Control: no-cache\r\n"
+                                    "X-Accel-Buffering: no\r\n"
+                                    "Connection: close\r\n") +
+                        kCorsHeaders + "\r\n"
+                        "retry: 2000\n\n"
+                        "data: " + last_snapshot + "\n\n";
+            if (!flush_client(c)) c.done = true;
+            return;
+        }
+        std::string body = stats_json();
+        reply_and_close(c, "HTTP/1.1 200 OK\r\n"
+                           "Content-Type: application/json\r\n"
+                           "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                           "Connection: close\r\n" +
+                           std::string(kCorsHeaders) + "\r\n" + body);
+    };
 
     while (!stop_flag_) {
-        pollfd pfd{stats_socket_, POLLIN, 0};
-        if (poll(&pfd, 1, 1000) <= 0) continue;
-
-        int client = accept(stats_socket_, nullptr, nullptr);
-        if (client < 0) continue;
-
-        // This loop serves one client at a time, so a peer that connects and
-        // never sends (port scanners do this) would block it forever.
-        struct timeval io_timeout{2, 0};
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &io_timeout, sizeof(io_timeout));
-        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &io_timeout, sizeof(io_timeout));
-
-        char req[512] = {};
-        read(client, req, sizeof(req) - 1); // drain the request
-        std::string req_str(req);
-
-        // CORS headers — allow browser dashboards on any origin to poll this endpoint.
-        const std::string cors_headers =
-            "Access-Control-Allow-Origin: *\r\n"
-            "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n";
-
-        // Handle OPTIONS preflight (browsers send this before cross-origin GET).
-        if (req_str.substr(0, 7) == "OPTIONS") {
-            std::string preflight =
-                "HTTP/1.1 204 No Content\r\n" +
-                cors_headers +
-                "Connection: close\r\n\r\n";
-            send(client, preflight.data(), preflight.size(), MSG_NOSIGNAL);
-            close(client);
-            continue;
+        pfds.clear();
+        pfds.push_back({listen_fd, POLLIN, 0});
+        for (auto& c : clients) {
+            short events = POLLIN; // a stream reads only to notice the client leaving
+            if (!c.pending.empty()) events |= POLLOUT;
+            pfds.push_back({c.fd, events, 0});
         }
 
-        std::string body;
-        {
-            std::lock_guard<std::mutex> lock(connection_mutex_);
-            body = "{\"port\":" + std::to_string(listen_port_) + ",\"backends\":[";
-            for (size_t i = 0; i < backend_ports_.size(); ++i) {
-                if (i) body += ",";
-                body += "{\"port\":"        + std::to_string(backend_ports_[i])  +
-                        ",\"connections\":" + std::to_string(active_connections_[i]) +
-                        ",\"healthy\":"     + (backend_healthy_[i] ? "true" : "false") + "}";
+        auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next_tick - Clock::now());
+        int ready = poll(pfds.data(), pfds.size(), std::max<int>(0, static_cast<int>(wait.count())));
+        if (ready < 0 && errno != EINTR) {
+            log_err("Stats poll() failed: " + std::string(strerror(errno)));
+            break;
+        }
+        now = Clock::now();
+
+        // Existing clients first: pfds[i + 1] belongs to clients[i], and
+        // accepting below appends to clients.
+        for (size_t i = 0; i < clients.size() && ready > 0; ++i) {
+            StatsClient& c = clients[i];
+            short re = pfds[i + 1].revents;
+            if (!re) continue;
+            if (re & (POLLERR | POLLNVAL)) { c.done = true; continue; }
+
+            if (re & (POLLIN | POLLHUP)) {
+                char buf[1024];
+                ssize_t n = recv(c.fd, buf, sizeof(buf), 0);
+                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                    c.done = true;
+                    continue;
+                }
+                if (n > 0 && !c.streaming) {
+                    c.request.append(buf, static_cast<size_t>(n));
+                    if (c.request.find("\r\n\r\n") != std::string::npos) handle_request(c);
+                    else if (c.request.size() > 8192) c.done = true;
+                }
             }
-            body += "]}";
+            if ((re & POLLOUT) && !flush_client(c)) c.done = true;
         }
 
-        std::string response =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: " + std::to_string(body.size()) + "\r\n"
-            "Connection: close\r\n" +
-            cors_headers +
-            "\r\n" + body;
+        if (pfds[0].revents & POLLIN) {
+            for (;;) {
+                int fd = accept4(listen_fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+                if (fd < 0) break;
+                if (clients.size() >= kMaxStatsClients) {
+                    std::string busy = std::string("HTTP/1.1 503 Service Unavailable\r\n") +
+                                       kCorsHeaders + "Content-Length: 0\r\nConnection: close\r\n\r\n";
+                    ssize_t ignored = send(fd, busy.data(), busy.size(), MSG_NOSIGNAL);
+                    (void)ignored;
+                    close(fd);
+                    continue;
+                }
+                StatsClient c;
+                c.fd       = fd;
+                c.accepted = now;
+                clients.push_back(std::move(c));
+            }
+        }
 
-        send(client, response.data(), response.size(), MSG_NOSIGNAL);
-        close(client);
+        if (now >= next_tick) {
+            next_tick = now + kStatsTick;
+            std::string snapshot = stats_json();
+            if (snapshot != last_snapshot) {
+                last_snapshot = snapshot;
+                broadcast("data: " + snapshot + "\n\n");
+            } else if (now - last_event >= kStreamKeepalive) {
+                broadcast(": ping\n\n");
+            }
+        }
+
+        // A peer that connects and never finishes its request (port scanners
+        // do this) is dropped instead of holding a slot.
+        for (auto& c : clients)
+            if (!c.streaming && !c.done && now - c.accepted >= kRequestTimeout) c.done = true;
+
+        clients.erase(std::remove_if(clients.begin(), clients.end(),
+                                     [](const StatsClient& c) {
+                                         if (c.done) close(c.fd);
+                                         return c.done;
+                                     }),
+                      clients.end());
     }
 
-    close(stats_socket_);
-    stats_socket_ = -1;
+    for (auto& c : clients) close(c.fd);
+    close(listen_fd);
 }
 
 void LoadBalancer::stop() {
@@ -777,7 +919,6 @@ void LoadBalancer::stop() {
         if (stop_flag_.exchange(true)) return;
         for (auto& w : workers_) w->wake();
     }
-    if (stats_socket_ >= 0) { close(stats_socket_); stats_socket_ = -1; }
     if (health_check_thread_.joinable()) health_check_thread_.join();
     if (stats_thread_.joinable())        stats_thread_.join();
 }

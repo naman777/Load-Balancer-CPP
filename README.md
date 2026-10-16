@@ -194,7 +194,8 @@ chmod +x scripts/start.sh scripts/stop.sh scripts/test.sh
 
 # In another terminal — test
 curl http://localhost:8080/           # proxied to a backend
-curl http://localhost:8081/stats      # live JSON stats
+curl http://localhost:8081/stats      # JSON stats snapshot
+curl -N http://localhost:8081/stats/stream   # live updates (Server-Sent Events)
 
 # Stop everything
 ./scripts/stop.sh
@@ -453,7 +454,30 @@ curl http://localhost:8081/stats
 }
 ```
 
-The data is captured under `connection_mutex_` so it is always consistent. The stats thread handles one request at a time (it's monitoring, not a hot path).
+The data is captured under `connection_mutex_` so it is always consistent.
+
+### Live stream (Server-Sent Events)
+
+`GET /stats/stream` holds the connection open and pushes the same JSON as an SSE event whenever it changes:
+
+```bash
+curl -N http://localhost:8081/stats/stream
+```
+
+```
+retry: 2000
+
+data: {"port":8080,"backends":[{"port":8001,"connections":0,"healthy":true},...]}
+
+data: {"port":8080,"backends":[{"port":8001,"connections":14,"healthy":true},...]}
+```
+
+- The first event is sent on connect. After that, the stats thread checks the snapshot every 100 ms and sends one only when it changed, so a stream gets at most 10 events a second however busy the proxy is.
+- After 15 s without changes it sends a `: ping` comment, so nginx and other proxies don't time the stream out (nginx's default `proxy_read_timeout` is 60 s).
+- `X-Accel-Buffering: no` stops nginx from buffering events, so the existing `location /stats` block forwards the stream as is.
+- The stats thread multiplexes up to 256 streams and pending requests with `poll()`, separately from the epoll workers. A stream that stops reading is dropped once 64 KB is queued for it.
+
+The dashboard subscribes with `EventSource` and falls back to polling `/stats` every 2 s while the stream is unavailable. EventSource keeps reconnecting in the background, and the dashboard switches back to the stream when it returns.
 
 ---
 
