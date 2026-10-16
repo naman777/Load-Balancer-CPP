@@ -6,6 +6,7 @@
 #include <iostream>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -34,7 +35,7 @@ static void print_usage(const char* prog) {
               << "  --backends <p,...>  Comma-separated backend ports (default: 8001,8002,8003)\n"
               << "  --weights <w,...>   Per-backend weights, same order as --backends\n"
               << "  --algo <lc|rr|ih|rh> Algorithm: least-conn | round-robin | ip-hash | rendezvous (default: lc)\n"
-              << "  --threads <n>       Thread pool size (default: 16)\n"
+              << "  --workers <n>       Epoll worker threads (default: one per CPU core)\n"
               << "  --max-conn <n>      Max concurrent connections per backend; 0=unlimited (default: 0)\n"
               << "  --help              Show this message\n"
               << "\nSend SIGHUP to reload algo and weights from the config file without restarting.\n";
@@ -66,7 +67,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--port"     && i + 1 < argc) cfg.port    = std::stoi(argv[++i]);
         else if (arg == "--backends" && i + 1 < argc) cfg.backends = parse_ports(argv[++i]);
         else if (arg == "--weights"  && i + 1 < argc) cfg.weights  = parse_ports(argv[++i]);
-        else if (arg == "--threads"  && i + 1 < argc) cfg.threads   = static_cast<size_t>(std::stoi(argv[++i]));
+        else if ((arg == "--workers" || arg == "--threads") && i + 1 < argc)
+            cfg.workers = static_cast<size_t>(std::stoi(argv[++i]));
         else if (arg == "--max-conn" && i + 1 < argc) cfg.max_conn  = std::stoi(argv[++i]);
         else if (arg == "--algo"     && i + 1 < argc) {
             std::string a = argv[++i];
@@ -84,7 +86,16 @@ int main(int argc, char* argv[]) {
 
     if (cfg.backends.empty()) { std::cerr << "At least one backend is required.\n"; return 1; }
 
-    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.threads,
+    // Each proxied connection holds two fds, and the usual soft limit of 1024
+    // would cap the event loop at ~500 connections. Raise it to the hard limit,
+    // as nginx's worker_rlimit_nofile does.
+    rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
+        rl.rlim_cur = rl.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &rl);
+    }
+
+    LoadBalancer lb(cfg.port, cfg.backends, cfg.algo, cfg.workers,
                     cfg.weights, cfg.max_conn);
     g_lb = &lb;
 
